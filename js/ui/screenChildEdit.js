@@ -6,6 +6,8 @@ import { resizeAndCompress } from "../utils/image.js";
 import { getPhotoObjectURL } from "../storage.js";
 import { getChildById } from "../roster.js";
 
+const GROUP_PRESETS = ["まつぼっくり", "くるみ", "くわのみ", "つぼみ", "たね"];
+
 let editingChildId = null;
 let pendingPhotoBlob = null;
 let pendingPhotoRemoved = false;
@@ -152,19 +154,18 @@ function render(container, existing) {
       });
       tagList.appendChild(chip);
     }
-    const addBtn = document.createElement("button");
-    addBtn.type = "button";
-    addBtn.className = "chip chip--tappable";
-    addBtn.innerHTML = '<svg class="icon" style="width:14px;height:14px"><use href="#icon-plus"></use></svg>グループを追加';
-    addBtn.addEventListener("click", () => {
-      const name = prompt("グループ名を入力してください(例: ひまわり組)");
-      const trimmed = name?.trim();
-      if (trimmed && !tags.includes(trimmed)) {
-        tags = [...tags, trimmed];
+    for (const preset of GROUP_PRESETS) {
+      if (tags.includes(preset)) continue;
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "chip chip--tappable";
+      addBtn.innerHTML = `<svg class="icon" style="width:14px;height:14px"><use href="#icon-plus"></use></svg>${preset}`;
+      addBtn.addEventListener("click", () => {
+        tags = [...tags, preset];
         renderTags();
-      }
-    });
-    tagList.appendChild(addBtn);
+      });
+      tagList.appendChild(addBtn);
+    }
   }
   renderTags();
 
