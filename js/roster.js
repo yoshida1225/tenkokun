@@ -1,4 +1,5 @@
 import { generateId } from "./utils/id.js";
+import { GROUP_PRESETS } from "./constants.js";
 
 // Pure roster domain logic. No DOM/storage access here (see plan 9-1) —
 // photo I/O and persistence are orchestrated by state.js so this module
@@ -43,5 +44,7 @@ export function searchRoster(children, query, tag) {
 export function listTags(children) {
   const set = new Set();
   for (const c of children) for (const t of c.tags) set.add(t);
-  return [...set].sort((a, b) => a.localeCompare(b, "ja"));
+  const presetOrder = GROUP_PRESETS.filter((g) => set.has(g));
+  const others = [...set].filter((t) => !GROUP_PRESETS.includes(t)).sort((a, b) => a.localeCompare(b, "ja"));
+  return [...presetOrder, ...others];
 }

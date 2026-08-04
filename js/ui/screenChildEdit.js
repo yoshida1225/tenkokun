@@ -5,8 +5,7 @@ import { showToast } from "./components/toast.js";
 import { resizeAndCompress } from "../utils/image.js";
 import { getPhotoObjectURL } from "../storage.js";
 import { getChildById } from "../roster.js";
-
-const GROUP_PRESETS = ["まつぼっくり", "くるみ", "くわのみ", "つぼみ", "たね"];
+import { GROUP_PRESETS } from "../constants.js";
 
 let editingChildId = null;
 let pendingPhotoBlob = null;

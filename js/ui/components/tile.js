@@ -1,11 +1,20 @@
 import { getPhotoObjectURL } from "../../storage.js";
+import { GROUP_PRESETS } from "../../constants.js";
 
 const AVATAR_COLORS = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706", "#dc2626", "#db2777", "#4f46e5"];
+const GROUP_COLORS = ["#2563eb", "#7c3aed", "#0891b2", "#059669", "#d97706"];
+const GROUP_COLOR_FALLBACK = "#64748b";
 
 function colorForName(name) {
   let hash = 0;
   for (let i = 0; i < name.length; i += 1) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
   return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
+
+function colorForGroup(group) {
+  if (!group) return null;
+  const idx = GROUP_PRESETS.indexOf(group);
+  return idx === -1 ? GROUP_COLOR_FALLBACK : GROUP_COLORS[idx];
 }
 
 function badgeIconId(status) {
@@ -14,7 +23,7 @@ function badgeIconId(status) {
   return "#icon-circle";
 }
 
-export function createTile({ name, photoRef, status = "default", meta, onClick }) {
+export function createTile({ name, photoRef, status = "default", meta, onClick, group }) {
   const el = document.createElement("button");
   el.type = "button";
   el.className = "tile";
@@ -25,7 +34,7 @@ export function createTile({ name, photoRef, status = "default", meta, onClick }
 
   const avatar = document.createElement("div");
   avatar.className = "tile__avatar";
-  avatar.style.background = colorForName(name || "");
+  avatar.style.background = colorForGroup(group) || colorForName(name || "");
   avatar.textContent = (name || "").trim().charAt(0) || "?";
   photoWrap.appendChild(avatar);
 

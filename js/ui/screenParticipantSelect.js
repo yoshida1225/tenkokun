@@ -143,6 +143,7 @@ function render(container) {
         photoRef: child.photoRef,
         status: isOn ? "checked" : "excluded",
         meta: isOn ? undefined : "休",
+        group: label === "グループなし" ? undefined : label,
         onClick: () => {
           if (participating.has(child.childId)) participating.delete(child.childId);
           else participating.add(child.childId);

@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const CACHE_NAME = `tenkokun-static-${CACHE_VERSION}`;
 
 const ASSETS = [
@@ -14,6 +14,7 @@ const ASSETS = [
   "./js/state.js",
   "./js/storage.js",
   "./js/roster.js",
+  "./js/constants.js",
   "./js/session.js",
   "./js/backup.js",
   "./js/utils/id.js",
