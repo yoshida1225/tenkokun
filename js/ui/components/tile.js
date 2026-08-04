@@ -35,7 +35,7 @@ export function createTile({ name, photoRef, status = "default", meta, onClick, 
   const avatar = document.createElement("div");
   avatar.className = "tile__avatar";
   avatar.style.background = colorForGroup(group) || colorForName(name || "");
-  avatar.textContent = (name || "").trim().charAt(0) || "?";
+  avatar.textContent = (name || "").trim() || "?";
   photoWrap.appendChild(avatar);
 
   const badge = document.createElement("div");

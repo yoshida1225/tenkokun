@@ -1,4 +1,4 @@
-const CACHE_VERSION = "v4";
+const CACHE_VERSION = "v5";
 const CACHE_NAME = `tenkokun-static-${CACHE_VERSION}`;
 
 const ASSETS = [
@@ -39,6 +39,7 @@ const ASSETS = [
   "./js/ui/components/tile.js",
   "./js/ui/components/toast.js",
   "./js/ui/components/confirmDialog.js",
+  "./js/ui/components/photoCropModal.js",
   "./js/ui/components/activeSessionBanner.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",

@@ -2,7 +2,7 @@ import { getState, saveChild, deleteChild } from "../state.js";
 import * as router from "../router.js";
 import * as confirmDialog from "./components/confirmDialog.js";
 import { showToast } from "./components/toast.js";
-import { resizeAndCompress } from "../utils/image.js";
+import * as photoCropModal from "./components/photoCropModal.js";
 import { getPhotoObjectURL } from "../storage.js";
 import { getChildById } from "../roster.js";
 import { GROUP_PRESETS } from "../constants.js";
@@ -72,19 +72,20 @@ function render(container, existing) {
   fileInput.type = "file";
   fileInput.accept = "image/*";
   fileInput.className = "hidden";
-  fileInput.addEventListener("change", async () => {
+  fileInput.addEventListener("change", () => {
     const file = fileInput.files?.[0];
+    fileInput.value = "";
     if (!file) return;
-    try {
-      pendingPhotoBlob = await resizeAndCompress(file);
-      pendingPhotoRemoved = false;
-      if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
-      previewObjectUrl = URL.createObjectURL(pendingPhotoBlob);
-      preview.innerHTML = `<img src="${previewObjectUrl}" alt="">`;
-    } catch (err) {
-      showToast("写真の処理に失敗しました");
-      console.error(err);
-    }
+    photoCropModal.open({
+      file,
+      onConfirm: (blob) => {
+        pendingPhotoBlob = blob;
+        pendingPhotoRemoved = false;
+        if (previewObjectUrl) URL.revokeObjectURL(previewObjectUrl);
+        previewObjectUrl = URL.createObjectURL(blob);
+        preview.innerHTML = `<img src="${previewObjectUrl}" alt="">`;
+      },
+    });
   });
 
   const pickBtn = document.createElement("button");
