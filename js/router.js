@@ -113,9 +113,23 @@ export function goBack() {
   history.back();
 }
 
+function toHistoryParams(params) {
+  const result = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value !== "function") {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
 export function openOverlay(overlayId, params = {}) {
   mountOverlayDom(overlayId, params);
-  history.pushState({ screenId: currentScreenId, overlay: overlayId, params }, "", location.hash);
+  history.pushState(
+    { screenId: currentScreenId, overlay: overlayId, params: toHistoryParams(params) },
+    "",
+    location.hash
+  );
 }
 
 export function closeOverlay() {
