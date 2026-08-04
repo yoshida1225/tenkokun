@@ -41,6 +41,8 @@ function render(container) {
   tileRevokers.forEach((fn) => fn());
   tileRevokers = [];
 
+  const previousScrollTop = container.querySelector(".screen-scroll")?.scrollTop ?? 0;
+
   const { activeSession: session } = getState();
   if (!session) return;
 
@@ -198,6 +200,7 @@ function render(container) {
   }
 
   container.appendChild(scroll);
+  scroll.scrollTop = previousScrollTop;
 
   const footer = document.createElement("div");
   footer.className = "sticky-footer";
