@@ -70,7 +70,6 @@ function render(container, existing) {
   const fileInput = document.createElement("input");
   fileInput.type = "file";
   fileInput.accept = "image/*";
-  fileInput.capture = "environment";
   fileInput.className = "hidden";
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
