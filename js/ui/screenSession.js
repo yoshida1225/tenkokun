@@ -251,7 +251,13 @@ function createMicButton(checkpointId) {
 
     const recognition = voice.createRecognition();
     activeRecognition = recognition;
-    micBtn.classList.add("mic-btn--listening");
+
+    // Only show "listening" once recognition actually confirms it started —
+    // a synchronous start() throw or an early error should never look like
+    // silence to the caregiver.
+    recognition.onstart = () => {
+      micBtn.classList.add("mic-btn--listening");
+    };
 
     recognition.onresult = (event) => {
       const { activeSession: current } = getState();
@@ -274,8 +280,15 @@ function createMicButton(checkpointId) {
       }
     };
     recognition.onerror = (event) => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
-      showToast("音声を認識できませんでした");
+      if (event.error === "aborted") return; // our own cancelListening()
+      const messages = {
+        "no-speech": "声が聞き取れませんでした",
+        "not-allowed": "マイクの使用が許可されていません。設定でマイクへのアクセスを許可してください",
+        "service-not-allowed": "この端末では音声認識が利用できないようです",
+        "audio-capture": "マイクが使えませんでした",
+        network: "通信エラーで音声認識に失敗しました",
+      };
+      showToast(messages[event.error] || `音声認識でエラーが発生しました (${event.error})`);
     };
     recognition.onend = () => {
       micBtn.classList.remove("mic-btn--listening");
@@ -284,7 +297,8 @@ function createMicButton(checkpointId) {
 
     try {
       recognition.start();
-    } catch {
+    } catch (err) {
+      showToast(`音声認識を開始できませんでした (${err?.name || err})`);
       micBtn.classList.remove("mic-btn--listening");
       activeRecognition = null;
     }
