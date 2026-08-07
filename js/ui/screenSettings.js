@@ -1,4 +1,4 @@
-import { getState, saveSettings, resetAll } from "../state.js";
+import { getState, saveSettings, resetAll, sweepOrphanPhotos } from "../state.js";
 import * as router from "../router.js";
 import * as confirmDialog from "./components/confirmDialog.js";
 import { showToast } from "./components/toast.js";
@@ -114,6 +114,20 @@ async function render(container) {
         : "この端末では使用量を確認できません";
     }
   });
+  // Runs on its own at startup; this is the manual lever so the effect is
+  // visible and recoverable if the automatic sweep ever misbehaves.
+  const gcBtn = document.createElement("button");
+  gcBtn.className = "btn btn--secondary btn--block";
+  gcBtn.style.marginTop = "var(--space-3)";
+  gcBtn.textContent = "不要な写真データを整理する";
+  gcBtn.addEventListener("click", async () => {
+    gcBtn.disabled = true;
+    const { deleted } = await sweepOrphanPhotos();
+    gcBtn.disabled = false;
+    showToast(deleted ? `${deleted}件の不要な写真を削除しました` : "整理できる写真はありませんでした");
+    render(container);
+  });
+  storageSection.appendChild(gcBtn);
 
   // Danger zone
   const dangerSection = document.createElement("div");

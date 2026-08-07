@@ -1,6 +1,7 @@
 import * as storage from "./storage.js";
 import * as roster from "./roster.js";
 import * as session from "./session.js";
+import { selectOrphanPhotoRefs } from "./photoGc.js";
 
 const state = {
   roster: [],
@@ -41,6 +42,34 @@ export async function init() {
   state.sessions = storage.getSessionHistoryRaw();
   state.settings = storage.getSettingsRaw();
   await storage.requestPersistence();
+  schedulePhotoSweep();
+}
+
+// --- Orphaned session photo cleanup (see photoGc.js) ---
+
+// Deliberately not awaited by init(): reclaiming space must never delay boot,
+// and a failure here must never stop the app from starting. If it fails the
+// next launch simply retries.
+function schedulePhotoSweep() {
+  const run = () => {
+    sweepOrphanPhotos().catch((err) => console.error("photo sweep failed", err));
+  };
+  if (typeof requestIdleCallback === "function") requestIdleCallback(run, { timeout: 5000 });
+  else setTimeout(run, 3000); // iOS Safari has no requestIdleCallback
+}
+
+export async function sweepOrphanPhotos() {
+  // Snapshot the keys FIRST: photos copied by a session started after this
+  // point simply aren't in the list, so they can never be selected.
+  const snapshot = await storage.getAllPhotoRefs();
+  // Read activeSession AFTER the await, so a walk resumed or started during
+  // the idle gap is protected by keepSessionIds.
+  const keepSessionIds = state.activeSession ? [state.activeSession.sessionId] : [];
+  const orphans = selectOrphanPhotoRefs(snapshot, { keepSessionIds });
+  if (!orphans.length) return { ok: true, deleted: 0 };
+  const result = await storage.deletePhotos(orphans);
+  console.info(`photo GC: removed ${result.deleted}/${orphans.length} orphaned session photos`);
+  return result;
 }
 
 // --- Roster ---
@@ -200,9 +229,22 @@ export function endSession() {
   consecutiveSaveFailures = 0;
   state.saveError = false;
   notify("session:ended");
+
+  // Only after the history append succeeded — on the failure branch above the
+  // session goes back to in_progress with its photos intact so 終了 can be
+  // retried. Fire-and-forget (deletePhotos never rejects) and NOT awaited, so
+  // endSession stays synchronous for modalEndSession.js's call site.
+  // The archived session keeps its now-dangling photoSnapshot refs by design:
+  // getPhoto returns null for a missing key, and clearing them before the
+  // append would need restoring on rollback for no benefit.
+  const refs = activeSession.participants.map((p) => p.photoSnapshot).filter(Boolean);
+  storage.deletePhotos(refs);
+
   return { ok: true };
 }
 
+// NOTE: a genuine discard would need to delete the session's photos AND skip
+// the history append. Currently unused (zero call sites).
 export function discardSession() {
   return endSession();
 }

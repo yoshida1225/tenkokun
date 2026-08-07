@@ -3,7 +3,7 @@ import * as router from "../router.js";
 import { activeParticipantIds, computeCarriedOverUnconfirmed } from "../session.js";
 import { createTile } from "./components/tile.js";
 import { formatTime } from "../utils/date.js";
-import { consumeHighlight } from "./highlight.js";
+import { consumeHighlight, setHighlight } from "./highlight.js";
 import * as confirmDialog from "./components/confirmDialog.js";
 import * as voice from "../voice.js";
 import { showToast } from "./components/toast.js";
@@ -12,7 +12,6 @@ let unsubscribers = [];
 let currentCheckpointId = null;
 let showExited = false;
 let tileRevokers = [];
-let activeRecognition = null;
 
 export function mount(container, params) {
   const { activeSession } = getState();
@@ -25,6 +24,8 @@ export function mount(container, params) {
   render(container);
   unsubscribers.push(subscribe("session:changed", () => render(container)));
   unsubscribers.push(subscribe("session:ended", () => router.navigateTo("home", {}, { replace: true })));
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  window.addEventListener("pagehide", onPageHide);
 }
 
 export function unmount() {
@@ -32,10 +33,18 @@ export function unmount() {
   unsubscribers = [];
   tileRevokers.forEach((fn) => fn());
   tileRevokers = [];
-  if (activeRecognition) {
-    activeRecognition.abort();
-    activeRecognition = null;
-  }
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+  window.removeEventListener("pagehide", onPageHide);
+  stopVoice({ hard: true });
+}
+
+// Backgrounding the app or locking the screen must not leave the mic live.
+function onVisibilityChange() {
+  if (document.hidden) stopVoice({ hard: true });
+}
+
+function onPageHide() {
+  stopVoice({ hard: true });
 }
 
 function pickDefaultCheckpoint(session) {
@@ -74,8 +83,13 @@ function render(container) {
     </div>
   `;
   header.querySelector(".header__back").addEventListener("click", () => router.navigateTo("home"));
-  header.querySelector("#btn-exit").addEventListener("click", () => router.openOverlay("exitSelect", { session }));
-  header.querySelector("#btn-end-session").addEventListener("click", () => router.openOverlay("endSession", { session }));
+  // Overlays do NOT unmount this screen (see router.mountOverlayDom), so the
+  // mic must be stopped explicitly or it keeps confirming children behind a
+  // modal the caregiver has already moved on from.
+  header.querySelector("#btn-exit").addEventListener("click", () => openOverlayWithMicOff("exitSelect", { session }));
+  header
+    .querySelector("#btn-end-session")
+    .addEventListener("click", () => openOverlayWithMicOff("endSession", { session }));
   container.appendChild(header);
 
   // Carried-over unconfirmed banner (3-4)
@@ -119,7 +133,7 @@ function render(container) {
   const addTab = document.createElement("button");
   addTab.className = "checkpoint-tab checkpoint-tab--add";
   addTab.innerHTML = '<svg class="icon" style="width:16px;height:16px"><use href="#icon-plus"></use></svg>点呼を追加';
-  addTab.addEventListener("click", () => router.openOverlay("addCheckpoint", { session }));
+  addTab.addEventListener("click", () => openOverlayWithMicOff("addCheckpoint", { session }));
   tabs.appendChild(addTab);
   container.appendChild(tabs);
 
@@ -145,7 +159,7 @@ function render(container) {
   const scroll = document.createElement("div");
   scroll.className = "screen-scroll";
 
-  const highlightChildId = consumeHighlight();
+  const { childId: highlightChildId, kind: highlightKind } = consumeHighlight();
 
   const grid = document.createElement("div");
   grid.className = "tile-grid";
@@ -161,7 +175,7 @@ function render(container) {
     });
     tileRevokers.push(revoke);
     if (childId === highlightChildId) {
-      el.classList.add("tile--highlight");
+      el.classList.add(highlightKind === "voice" ? "tile--voice-flash" : "tile--highlight");
       requestAnimationFrame(() => el.scrollIntoView({ block: "center", behavior: "smooth" }));
     }
     grid.appendChild(el);
@@ -220,7 +234,7 @@ function render(container) {
   recordBtn.addEventListener("click", () => {
     const result = recordCheckpoint(checkpoint.checkpointId, { allowUnconfirmed: false });
     if (!result.ok) {
-      router.openOverlay("unconfirmedWarning", {
+      openOverlayWithMicOff("unconfirmedWarning", {
         session,
         checkpointId: checkpoint.checkpointId,
         unconfirmedChildIds: result.unconfirmedChildIds,
@@ -230,116 +244,251 @@ function render(container) {
   footer.appendChild(recordBtn);
 
   if (voice.isSupported()) {
-    footer.appendChild(createMicButton(checkpoint.checkpointId));
+    footer.appendChild(createMicButton());
   }
 
   container.appendChild(footer);
 }
 
-// Push-to-talk: hold to listen, release to match the spoken name against the
-// active roster for this checkpoint and confirm on an unambiguous hit.
-function createMicButton(checkpointId) {
+function openOverlayWithMicOff(name, params) {
+  stopVoice({ hard: true });
+  router.openOverlay(name, params);
+}
+
+// --- Voice confirmation (tap to toggle) ---
+//
+// This was originally push-to-talk, which could never work: on touch the UA
+// fires pointerup -> pointerout -> pointerleave, so the pointerleave handler's
+// abort() destroyed the result that pointerup's stop() had just asked for, and
+// onerror swallowed the resulting "aborted". Every correct press threw away
+// its own result, silently. Tapping to toggle removes that whole class of bug
+// and is easier to use while saying many names in a row.
+//
+// Safety property carried over from push-to-talk: the mic runs only when
+// deliberately switched on, shows a red pulsing state, and stops on screen
+// leave, backgrounding, overlays, and after MAX_LISTEN_MS.
+
+const WATCHDOG_MS = 4000;
+const RESTART_DELAY_MS = 300;
+const MAX_RESTARTS_WITHOUT_RESULT = 8;
+const MAX_LISTEN_MS = 3 * 60 * 1000;
+const UNMATCHED_TOAST_COOLDOWN_MS = 4000;
+const TOAST_SHORT = 1600;
+
+const VOICE_ERROR_MESSAGES = {
+  "no-speech": "声が聞き取れませんでした",
+  "not-allowed": "マイクの使用が許可されていません。設定でマイクへのアクセスを許可してください",
+  "service-not-allowed": "この端末では音声認識が利用できないようです",
+  "audio-capture": "マイクが使えませんでした",
+  network: "通信エラーで音声認識に失敗しました",
+};
+const TERMINAL_VOICE_ERRORS = new Set(["not-allowed", "service-not-allowed", "audio-capture"]);
+
+let activeRecognition = null;
+let voiceListening = false; // user intent; survives render(), unlike the DOM
+let restartTimer = null;
+let watchdogTimer = null;
+let autoOffTimer = null;
+let consecutiveNoSpeech = 0;
+let restartCount = 0;
+let confirmedByVoiceCount = 0;
+let lastUnmatchedToastAt = 0;
+
+// Resolve the button from the DOM every time. render() rebuilds the footer
+// after every confirmed name, so a captured reference goes stale immediately.
+function micEl() {
+  return document.querySelector(".screen--session .mic-btn");
+}
+
+function paintMic() {
+  const el = micEl();
+  if (!el) return; // mid-render; the next createMicButton() paints itself
+  el.classList.toggle("mic-btn--listening", voiceListening);
+  el.setAttribute("aria-pressed", String(voiceListening));
+  el.setAttribute("aria-label", voiceListening ? "音声確認を止める" : "音声で確認する(タップして開始)");
+}
+
+function createMicButton() {
   const micBtn = document.createElement("button");
   micBtn.type = "button";
-  micBtn.className = "mic-btn";
-  micBtn.setAttribute("aria-label", "音声で確認(押しながら名前を言う)");
+  micBtn.className = `mic-btn${voiceListening ? " mic-btn--listening" : ""}`;
+  micBtn.setAttribute("aria-pressed", String(voiceListening));
+  micBtn.setAttribute("aria-label", voiceListening ? "音声確認を止める" : "音声で確認する(タップして開始)");
   micBtn.innerHTML = '<svg class="icon"><use href="#icon-mic"></use></svg>';
-
-  const startListening = (e) => {
-    e.preventDefault();
-    showToast("🎤 マイク起動中…", { duration: 1500 });
-    if (activeRecognition) return;
-
-    // Everything here — construction, property assignment, start() — is
-    // wrapped in one try/catch: on iOS Safari a synchronous throw can come
-    // from any of these steps, not just start(), and an uncaught error in an
-    // event handler fails completely silently (no console the caregiver can
-    // see, no toast) unless we catch it ourselves.
-    try {
-      const recognition = voice.createRecognition();
-      activeRecognition = recognition;
-      let started = false;
-
-      // If the platform's SpeechRecognition never fires any event at all
-      // (seen on some iOS Safari versions — the constructor exists but the
-      // backend is inert), this is the only way the caregiver finds out
-      // instead of the mic button just doing nothing forever.
-      const watchdog = setTimeout(() => {
-        if (started) return;
-        showToast("音声認識が反応しません。この端末では使えない可能性があります");
-        try {
-          recognition.abort();
-        } catch {
-          /* already dead */
-        }
-        if (activeRecognition === recognition) activeRecognition = null;
-        micBtn.classList.remove("mic-btn--listening");
-      }, 4000);
-
-      recognition.onstart = () => {
-        started = true;
-        clearTimeout(watchdog);
-        micBtn.classList.add("mic-btn--listening");
-      };
-
-      recognition.onresult = (event) => {
-        const { activeSession: current } = getState();
-        if (!current) return;
-        const activeIdsNow = activeParticipantIds(current, checkpointId);
-        const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
-        // continuous mode: each pause in speech finalizes one more entry, so
-        // a single onresult call may carry several names said while held.
-        for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const result = event.results[i];
-          if (!result.isFinal) continue;
-          const { childId, transcript } = voice.matchFromResult(result, candidates);
-          if (childId) {
-            confirmChild(checkpointId, childId);
-            const name = candidates.find((p) => p.childId === childId)?.nameSnapshot;
-            showToast(`✓ ${name} を確認しました`);
-          } else if (transcript) {
-            showToast(`「${transcript}」を認識できませんでした。タップして確認してください`);
-          }
-        }
-      };
-      recognition.onerror = (event) => {
-        clearTimeout(watchdog);
-        if (event.error === "aborted") return; // our own cancelListening()
-        const messages = {
-          "no-speech": "声が聞き取れませんでした",
-          "not-allowed": "マイクの使用が許可されていません。設定でマイクへのアクセスを許可してください",
-          "service-not-allowed": "この端末では音声認識が利用できないようです",
-          "audio-capture": "マイクが使えませんでした",
-          network: "通信エラーで音声認識に失敗しました",
-        };
-        showToast(messages[event.error] || `音声認識でエラーが発生しました (${event.error})`);
-      };
-      recognition.onend = () => {
-        clearTimeout(watchdog);
-        micBtn.classList.remove("mic-btn--listening");
-        activeRecognition = null;
-      };
-
-      recognition.start();
-    } catch (err) {
-      showToast(`音声認識を開始できませんでした (${err?.name || err?.message || err})`);
-      micBtn.classList.remove("mic-btn--listening");
-      activeRecognition = null;
-    }
-  };
-
-  const stopListening = () => {
-    if (activeRecognition) activeRecognition.stop();
-  };
-
-  const cancelListening = () => {
-    if (activeRecognition) activeRecognition.abort();
-  };
-
-  micBtn.addEventListener("pointerdown", startListening);
-  micBtn.addEventListener("pointerup", stopListening);
-  micBtn.addEventListener("pointercancel", cancelListening);
-  micBtn.addEventListener("pointerleave", cancelListening);
-
+  micBtn.addEventListener("click", toggleVoice);
   return micBtn;
+}
+
+function toggleVoice() {
+  if (voiceListening) {
+    stopVoice({ summary: true });
+    return;
+  }
+  voiceListening = true;
+  confirmedByVoiceCount = 0;
+  restartCount = 0;
+  consecutiveNoSpeech = 0;
+  paintMic();
+  showToast("🎤 聞き取り中。名前を言ってください", { duration: TOAST_SHORT });
+  // Backstop so a mic left on in a pocket can't listen indefinitely.
+  autoOffTimer = setTimeout(() => {
+    stopVoice({ hard: true });
+    showToast("マイクを自動で止めました", { duration: TOAST_SHORT });
+  }, MAX_LISTEN_MS);
+  startRecognitionCycle();
+}
+
+function startRecognitionCycle() {
+  if (!voiceListening || activeRecognition) return;
+
+  // Construction, property assignment and start() are all inside one try: on
+  // iOS a synchronous throw can come from any of them, and an uncaught error
+  // in a handler fails silently on a phone with no devtools.
+  try {
+    // Always a fresh instance — Safari throws InvalidStateError on start() of
+    // an already-ended one, which would kill every auto-restart silently.
+    const recognition = voice.createRecognition();
+    activeRecognition = recognition;
+    let started = false;
+
+    // Covers the platform granting a constructor but never delivering audio.
+    watchdogTimer = setTimeout(() => {
+      if (started) return;
+      failVoice(`音声認識が反応しません (${voice.diagnostics()})`);
+    }, WATCHDOG_MS);
+
+    recognition.onstart = () => {
+      started = true;
+      clearTimeout(watchdogTimer);
+      paintMic();
+    };
+    recognition.onresult = onVoiceResult;
+    recognition.onerror = onVoiceError;
+    recognition.onend = onVoiceEnd;
+
+    recognition.start();
+  } catch (err) {
+    failVoice(`音声認識を開始できませんでした (${err?.name || err?.message || err})`);
+  }
+}
+
+function onVoiceEnd() {
+  clearTimeout(watchdogTimer);
+  activeRecognition = null;
+  if (!voiceListening) {
+    paintMic();
+    return;
+  }
+  // Safari ignores `continuous` and ends after each utterance, so staying on
+  // means restarting. Delayed, because restarting instantly can leave iOS
+  // holding the audio session and kill the mic outright.
+  restartCount += 1;
+  if (restartCount > MAX_RESTARTS_WITHOUT_RESULT) {
+    failVoice("音声認識を続けられませんでした。もう一度マイクをタップしてください");
+    return;
+  }
+  restartTimer = setTimeout(startRecognitionCycle, RESTART_DELAY_MS);
+}
+
+function onVoiceError(event) {
+  clearTimeout(watchdogTimer);
+  const code = event.error;
+
+  // The old code returned silently on "aborted" no matter what, which is how
+  // the original bug stayed invisible. Only stay quiet if WE stopped it; if
+  // we're still meant to be listening, fall through to onend's restart, and
+  // MAX_RESTARTS_WITHOUT_RESULT eventually surfaces it loudly.
+  if (code === "aborted") return;
+
+  if (code === "no-speech") {
+    consecutiveNoSpeech += 1;
+    if (consecutiveNoSpeech === 3) {
+      showToast("声が聞き取れていません。近づけて話してください", { duration: TOAST_SHORT });
+    }
+    return;
+  }
+
+  if (TERMINAL_VOICE_ERRORS.has(code)) {
+    failVoice(`${VOICE_ERROR_MESSAGES[code]} (${voice.diagnostics()})`);
+    return;
+  }
+
+  if (code === "network") {
+    showToast(VOICE_ERROR_MESSAGES.network, { duration: TOAST_SHORT });
+    return;
+  }
+
+  failVoice(`音声認識でエラーが発生しました (${code})`);
+}
+
+function onVoiceResult(event) {
+  const { activeSession: current } = getState();
+  if (!current || !currentCheckpointId) return;
+  // Read the checkpoint from module state, not a closure, so switching tabs
+  // while listening confirms into the tab actually on screen.
+  const activeIdsNow = activeParticipantIds(current, currentCheckpointId);
+  const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
+
+  for (let i = event.resultIndex; i < event.results.length; i += 1) {
+    const result = event.results[i];
+    if (!result.isFinal) continue;
+
+    const { childId, transcript } = voice.matchFromResult(result, candidates);
+    restartCount = 0;
+    consecutiveNoSpeech = 0;
+
+    if (childId) {
+      confirmedByVoiceCount += 1;
+      // No success toast: 28 children would bury the screen. The tile turning
+      // green, the counter, the progress bar and the record button all already
+      // say it. setHighlight must come BEFORE confirmChild, which notifies ->
+      // render() -> consumeHighlight() synchronously.
+      setHighlight(childId, "voice");
+      confirmChild(currentCheckpointId, childId);
+    } else if (transcript && transcript.trim().length >= 2) {
+      const now = Date.now();
+      if (now - lastUnmatchedToastAt > UNMATCHED_TOAST_COOLDOWN_MS) {
+        lastUnmatchedToastAt = now;
+        showToast(`「${transcript}」は分かりませんでした。タップで確認を`, { duration: TOAST_SHORT });
+      }
+    }
+  }
+}
+
+function stopVoice({ hard = false, summary = false } = {}) {
+  const wasListening = voiceListening;
+  voiceListening = false;
+  clearTimeout(restartTimer);
+  clearTimeout(watchdogTimer);
+  clearTimeout(autoOffTimer);
+  restartTimer = watchdogTimer = autoOffTimer = null;
+
+  const recognition = activeRecognition;
+  if (recognition) {
+    // stop() on a deliberate toggle-off so the final utterance still lands —
+    // exactly what the old pointerleave abort() was destroying.
+    try {
+      if (hard) recognition.abort();
+      else recognition.stop();
+    } catch {
+      try {
+        recognition.abort();
+      } catch {
+        /* already dead */
+      }
+    }
+  }
+  paintMic();
+
+  if (wasListening && summary) {
+    showToast(
+      confirmedByVoiceCount ? `マイクを止めました(音声で${confirmedByVoiceCount}人確認)` : "マイクを止めました",
+      { duration: TOAST_SHORT }
+    );
+  }
+}
+
+function failVoice(message) {
+  stopVoice({ hard: true });
+  showToast(message);
 }

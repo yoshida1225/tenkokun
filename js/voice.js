@@ -10,9 +10,21 @@ export function isSupported() {
   return !!RecognitionCtor;
 }
 
-// continuous:true so onresult keeps firing (one final result per detected
-// utterance) for as long as the mic button stays held, instead of stopping
-// after the first name.
+// A short environment fingerprint appended to terminal failure messages.
+// There is no devtools on an iPhone, so without this a caregiver reporting
+// "it doesn't work" gives us nothing to act on. Kept terse enough to read off
+// a toast: e.g. "webkit/standalone/secure".
+export function diagnostics() {
+  const ctor = window.SpeechRecognition ? "standard" : window.webkitSpeechRecognition ? "webkit" : "none";
+  const display = window.navigator?.standalone ? "standalone" : "browser";
+  const secure = window.isSecureContext ? "secure" : "insecure";
+  return `${ctor}/${display}/${secure}`;
+}
+
+// continuous:true asks for one final result per utterance instead of stopping
+// after the first. Safari does NOT honour it — it ends after a single
+// utterance regardless — so the caller must restart on `end` to keep listening.
+// See startRecognitionCycle/scheduleRestart in ui/screenSession.js.
 export function createRecognition() {
   const recognition = new RecognitionCtor();
   recognition.lang = "ja-JP";

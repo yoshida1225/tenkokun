@@ -8,6 +8,7 @@ import {
   addAdhocCheckpoint,
   addExitEvent,
   revokeExitEvent,
+  confirmChild,
   endSession,
   generateSessionId,
   computeCarriedOverUnconfirmed,
@@ -112,6 +113,49 @@ test("endSession sets status and endedAt", () => {
   endSession(session, { now: NOW + 5000 });
   assert.equal(session.status, "ended");
   assert.ok(session.endedAt);
+});
+
+// confirmChild backs voice confirmation, where the same name can be recognized
+// more than once in a row. It must never toggle a child back off.
+test("confirmChild is idempotent", () => {
+  const session = createSession(makeChildren(), { now: NOW });
+  const cp = session.checkpoints[0];
+  confirmChild(session, cp.checkpointId, "c1");
+  confirmChild(session, cp.checkpointId, "c1");
+  confirmChild(session, cp.checkpointId, "c1");
+  assert.deepEqual(cp.confirmedChildIds, ["c1"]);
+});
+
+test("confirmChild never un-confirms, unlike toggleConfirm", () => {
+  const session = createSession(makeChildren(), { now: NOW });
+  const cp = session.checkpoints[0];
+
+  toggleConfirm(session, cp.checkpointId, "c1");
+  assert.deepEqual(cp.confirmedChildIds, ["c1"]);
+  toggleConfirm(session, cp.checkpointId, "c1");
+  assert.deepEqual(cp.confirmedChildIds, []);
+
+  confirmChild(session, cp.checkpointId, "c1");
+  confirmChild(session, cp.checkpointId, "c1");
+  assert.deepEqual(cp.confirmedChildIds, ["c1"]);
+});
+
+test("confirmChild ignores an unknown checkpointId without throwing", () => {
+  const session = createSession(makeChildren(), { now: NOW });
+  assert.doesNotThrow(() => confirmChild(session, "cp_missing", "c1"));
+  assert.deepEqual(session.checkpoints[0].confirmedChildIds, []);
+});
+
+// CHARACTERIZATION: confirmChild itself does not check exit events. Voice can't
+// reach this because ui/screenSession.js filters candidates through
+// activeParticipantIds first; this pins the fact that the caller owns that
+// filtering, so moving it would break a test rather than the roll call.
+test("KNOWN: confirmChild does not itself exclude an exited child", () => {
+  const session = createSession(makeChildren(), { now: NOW });
+  const cp = session.checkpoints[0];
+  addExitEvent(session, { childIds: ["c2"], reason: "pickup" }, { now: NOW });
+  confirmChild(session, cp.checkpointId, "c2");
+  assert.deepEqual(cp.confirmedChildIds, ["c2"]);
 });
 
 test("computeCarriedOverUnconfirmed tracks unresolved unconfirmed children across checkpoints", () => {

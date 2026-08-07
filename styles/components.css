@@ -313,6 +313,18 @@
   30%, 60%, 90% { box-shadow: none; }
 }
 
+/* Voice confirmation: green and brief. Distinct from tile--highlight above,
+   which is red because it means "this child is missing". */
+.tile--voice-flash .tile__photo-wrap {
+  animation: tile-voice-flash 900ms ease-out;
+}
+
+@keyframes tile-voice-flash {
+  0%, 100% { box-shadow: none; }
+  20%, 60% { box-shadow: 0 0 0 4px var(--color-success); }
+  40%, 80% { box-shadow: none; }
+}
+
 /* --- Chip / badge --- */
 .chip {
   display: inline-flex;
@@ -552,7 +564,7 @@ body.no-scroll {
   margin: var(--space-3) 0;
 }
 
-/* --- Mic (push-to-talk voice confirm) --- */
+/* --- Mic (tap to toggle voice confirm) --- */
 .btn--flex {
   flex: 1;
   width: auto;
@@ -573,7 +585,7 @@ body.no-scroll {
   user-select: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
-  touch-action: none;
+  touch-action: manipulation;
 }
 
 .mic-btn .icon {

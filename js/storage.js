@@ -129,6 +129,49 @@ export async function deletePhoto(photoRef) {
   }
 }
 
+// Every photo key currently stored. Returns [] rather than throwing so a
+// failure here can only skip a cleanup pass, never break startup.
+export async function getAllPhotoRefs() {
+  try {
+    const db = await openDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PHOTOS, "readonly");
+      const req = tx.objectStore(STORE_PHOTOS).getAllKeys();
+      req.onsuccess = () => resolve(req.result ?? []);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.error("getAllPhotoRefs failed", err);
+    return [];
+  }
+}
+
+// Chunked because a single readwrite transaction over hundreds of keys can
+// hold the IDB connection long enough to stall tile photo loads on an iPhone.
+export async function deletePhotos(photoRefs) {
+  if (!photoRefs?.length) return { ok: true, deleted: 0 };
+  const CHUNK = 100;
+  let deleted = 0;
+  try {
+    const db = await openDB();
+    for (let i = 0; i < photoRefs.length; i += CHUNK) {
+      const chunk = photoRefs.slice(i, i + CHUNK);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_PHOTOS, "readwrite");
+        const store = tx.objectStore(STORE_PHOTOS);
+        for (const ref of chunk) store.delete(ref);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+      });
+      deleted += chunk.length;
+    }
+    return { ok: true, deleted };
+  } catch (err) {
+    console.error("deletePhotos failed", err);
+    return { ok: false, deleted, error: err };
+  }
+}
+
 export async function copyPhoto(srcRef, destRef) {
   const blob = await getPhoto(srcRef);
   if (!blob) return { ok: false };
