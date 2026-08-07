@@ -247,58 +247,82 @@ function createMicButton(checkpointId) {
 
   const startListening = (e) => {
     e.preventDefault();
+    showToast("🎤 マイク起動中…", { duration: 1500 });
     if (activeRecognition) return;
 
-    const recognition = voice.createRecognition();
-    activeRecognition = recognition;
-
-    // Only show "listening" once recognition actually confirms it started —
-    // a synchronous start() throw or an early error should never look like
-    // silence to the caregiver.
-    recognition.onstart = () => {
-      micBtn.classList.add("mic-btn--listening");
-    };
-
-    recognition.onresult = (event) => {
-      const { activeSession: current } = getState();
-      if (!current) return;
-      const activeIdsNow = activeParticipantIds(current, checkpointId);
-      const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
-      // continuous mode: each pause in speech finalizes one more entry, so a
-      // single onresult call may carry several names said while still held.
-      for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const result = event.results[i];
-        if (!result.isFinal) continue;
-        const { childId, transcript } = voice.matchFromResult(result, candidates);
-        if (childId) {
-          confirmChild(checkpointId, childId);
-          const name = candidates.find((p) => p.childId === childId)?.nameSnapshot;
-          showToast(`✓ ${name} を確認しました`);
-        } else if (transcript) {
-          showToast(`「${transcript}」を認識できませんでした。タップして確認してください`);
-        }
-      }
-    };
-    recognition.onerror = (event) => {
-      if (event.error === "aborted") return; // our own cancelListening()
-      const messages = {
-        "no-speech": "声が聞き取れませんでした",
-        "not-allowed": "マイクの使用が許可されていません。設定でマイクへのアクセスを許可してください",
-        "service-not-allowed": "この端末では音声認識が利用できないようです",
-        "audio-capture": "マイクが使えませんでした",
-        network: "通信エラーで音声認識に失敗しました",
-      };
-      showToast(messages[event.error] || `音声認識でエラーが発生しました (${event.error})`);
-    };
-    recognition.onend = () => {
-      micBtn.classList.remove("mic-btn--listening");
-      activeRecognition = null;
-    };
-
+    // Everything here — construction, property assignment, start() — is
+    // wrapped in one try/catch: on iOS Safari a synchronous throw can come
+    // from any of these steps, not just start(), and an uncaught error in an
+    // event handler fails completely silently (no console the caregiver can
+    // see, no toast) unless we catch it ourselves.
     try {
+      const recognition = voice.createRecognition();
+      activeRecognition = recognition;
+      let started = false;
+
+      // If the platform's SpeechRecognition never fires any event at all
+      // (seen on some iOS Safari versions — the constructor exists but the
+      // backend is inert), this is the only way the caregiver finds out
+      // instead of the mic button just doing nothing forever.
+      const watchdog = setTimeout(() => {
+        if (started) return;
+        showToast("音声認識が反応しません。この端末では使えない可能性があります");
+        try {
+          recognition.abort();
+        } catch {
+          /* already dead */
+        }
+        if (activeRecognition === recognition) activeRecognition = null;
+        micBtn.classList.remove("mic-btn--listening");
+      }, 4000);
+
+      recognition.onstart = () => {
+        started = true;
+        clearTimeout(watchdog);
+        micBtn.classList.add("mic-btn--listening");
+      };
+
+      recognition.onresult = (event) => {
+        const { activeSession: current } = getState();
+        if (!current) return;
+        const activeIdsNow = activeParticipantIds(current, checkpointId);
+        const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
+        // continuous mode: each pause in speech finalizes one more entry, so
+        // a single onresult call may carry several names said while held.
+        for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          const result = event.results[i];
+          if (!result.isFinal) continue;
+          const { childId, transcript } = voice.matchFromResult(result, candidates);
+          if (childId) {
+            confirmChild(checkpointId, childId);
+            const name = candidates.find((p) => p.childId === childId)?.nameSnapshot;
+            showToast(`✓ ${name} を確認しました`);
+          } else if (transcript) {
+            showToast(`「${transcript}」を認識できませんでした。タップして確認してください`);
+          }
+        }
+      };
+      recognition.onerror = (event) => {
+        clearTimeout(watchdog);
+        if (event.error === "aborted") return; // our own cancelListening()
+        const messages = {
+          "no-speech": "声が聞き取れませんでした",
+          "not-allowed": "マイクの使用が許可されていません。設定でマイクへのアクセスを許可してください",
+          "service-not-allowed": "この端末では音声認識が利用できないようです",
+          "audio-capture": "マイクが使えませんでした",
+          network: "通信エラーで音声認識に失敗しました",
+        };
+        showToast(messages[event.error] || `音声認識でエラーが発生しました (${event.error})`);
+      };
+      recognition.onend = () => {
+        clearTimeout(watchdog);
+        micBtn.classList.remove("mic-btn--listening");
+        activeRecognition = null;
+      };
+
       recognition.start();
     } catch (err) {
-      showToast(`音声認識を開始できませんでした (${err?.name || err})`);
+      showToast(`音声認識を開始できませんでした (${err?.name || err?.message || err})`);
       micBtn.classList.remove("mic-btn--listening");
       activeRecognition = null;
     }
