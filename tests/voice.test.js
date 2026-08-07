@@ -1,10 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { matchChildName, matchFromResult } from "../js/voice.js";
+import {
+  matchChildName,
+  matchFromResult,
+  canAddAlias,
+  resolveAliasConflicts,
+  isLearnableTranscript,
+  MAX_ALIASES_PER_CHILD,
+} from "../js/voice.js";
 
-// The roster is hiragana full names (confirmed with the user), which is what
-// makes text matching viable at all — there is no furigana field, so a kanji
-// roster could never match a spoken transcript.
+// The roster is hiragana full names (confirmed with the user). iOS speech
+// recognition returns kanji for common names, which is why aliases exist.
 function roster() {
   return [
     { childId: "c1", nameSnapshot: "やまだ はなこ" },
@@ -104,4 +110,189 @@ test("matchFromResult tolerates an empty result without throwing", () => {
   const { childId, transcript } = matchFromResult(fakeResult(), roster());
   assert.equal(childId, null);
   assert.equal(transcript, "");
+});
+
+// --- Aliases ---
+
+function withAliases() {
+  return [
+    { childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["山田花子"] },
+    { childId: "c2", nameSnapshot: "たなか たろう", aliases: [] },
+    { childId: "c3", nameSnapshot: "すずき けん" }, // aliases key absent entirely
+  ];
+}
+
+test("matchChildName matches a taught kanji alias", () => {
+  assert.equal(matchChildName("山田花子", withAliases()), "c1");
+});
+
+test("honorific stripping and katakana folding apply to aliases too", () => {
+  assert.equal(matchChildName("山田花子さん", withAliases()), "c1");
+  const katakana = [{ childId: "c1", nameSnapshot: "みらい", aliases: ["やまだはなこ"] }];
+  assert.equal(matchChildName("ヤマダハナコ", katakana), "c1");
+});
+
+test("a candidate without an aliases key still matches by name", () => {
+  assert.equal(matchChildName("けん", withAliases()), "c3");
+});
+
+// Aliases are deliberately kept out of the substring tier: kanji aliases are
+// 1-3 chars and would fire inside far too many utterances.
+test("aliases match exactly, never as a substring", () => {
+  const c = [{ childId: "c1", nameSnapshot: "みらい", aliases: ["花子"] }];
+  assert.equal(matchChildName("山田花子", c), null);
+});
+
+// Load-bearing: uniqueness is counted by distinct childId, not entry count.
+// Under entry-count uniqueness both of these would wrongly return null.
+test("several matching forms of the SAME child count as one match", () => {
+  const c = [{ childId: "c1", nameSnapshot: "はなこ", aliases: ["はなこ", "ハナコ"] }];
+  assert.equal(matchChildName("はなこ", c), "c1");
+
+  const acrossTiers = [{ childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["やまだはなこ"] }];
+  assert.equal(matchChildName("やまだはなこ", acrossTiers), "c1");
+});
+
+test("matchChildName returns null when two children share an alias", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["花子"] },
+    { childId: "c2", nameSnapshot: "すずき はなこ", aliases: ["花子"] },
+  ];
+  assert.equal(matchChildName("花子", c), null);
+});
+
+test("matchChildName returns null when an alias equals another child's name", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["たなかたろう"] },
+    { childId: "c2", nameSnapshot: "たなか たろう" },
+  ];
+  assert.equal(matchChildName("たなかたろう", c), null);
+});
+
+test("blank aliases are ignored without throwing", () => {
+  const c = [{ childId: "c1", nameSnapshot: "はなこ", aliases: ["", "   ", null] }];
+  assert.equal(matchChildName("はなこ", c), "c1");
+  assert.equal(matchChildName("", c), null);
+});
+
+// THE STEAL. This is the wrong-child bug that canAddAlias and
+// resolveAliasConflicts exist to prevent: 「けん」 currently reaches c3 by
+// substring, but an exact-matching alias on c1 wins the earlier tier and takes
+// the utterance away. Pinned so that removing either guard fails loudly.
+test("KNOWN HAZARD: an unguarded alias steals another child's substring match", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "みらい", aliases: ["けん"] },
+    { childId: "c3", nameSnapshot: "すずき けん" },
+  ];
+  assert.equal(matchChildName("けん", c), "c1");
+  // ...and the guard undoes it.
+  assert.equal(matchChildName("けん", resolveAliasConflicts(c)), "c3");
+});
+
+// --- canAddAlias ---
+
+test("canAddAlias accepts a kanji transcript for a child with no aliases", () => {
+  const result = canAddAlias("山田花子", "c1", roster());
+  assert.equal(result.ok, true);
+  assert.equal(result.value, "山田花子");
+});
+
+test("canAddAlias allows a one-character kanji given name but not bare kana", () => {
+  assert.equal(canAddAlias("舞", "c1", roster()).ok, true);
+  assert.equal(canAddAlias("あ", "c1", roster()).reason, "tooShort");
+});
+
+test("canAddAlias rejects empty input", () => {
+  assert.equal(canAddAlias("", "c1", roster()).reason, "empty");
+  assert.equal(canAddAlias("   ", "c1", roster()).reason, "empty");
+  assert.equal(canAddAlias(null, "c1", roster()).reason, "empty");
+});
+
+test("canAddAlias rejects the child's own name and its own existing aliases", () => {
+  assert.equal(canAddAlias("やまだはなこ", "c1", roster()).reason, "duplicate");
+  assert.equal(canAddAlias("やまだ はなこさん", "c1", roster()).reason, "duplicate");
+  assert.equal(canAddAlias("山田花子", "c1", withAliases()).reason, "duplicate");
+});
+
+test("canAddAlias rejects anything overlapping another child's name", () => {
+  const exact = canAddAlias("たなかたろう", "c1", roster());
+  assert.equal(exact.reason, "conflict");
+  assert.equal(exact.conflictChildId, "c2");
+
+  // Contained IN another child's name.
+  assert.equal(canAddAlias("たろう", "c1", roster()).conflictChildId, "c2");
+  // Canon-equal after honorific stripping.
+  assert.equal(canAddAlias("すずきけんくん", "c1", roster()).conflictChildId, "c3");
+  // The steal case: would otherwise hijack c3's substring match.
+  assert.equal(canAddAlias("けん", "c1", roster()).conflictChildId, "c3");
+});
+
+test("canAddAlias rejects an alias already owned by another child", () => {
+  const result = canAddAlias("山田花子", "c2", withAliases());
+  assert.equal(result.reason, "conflict");
+  assert.equal(result.conflictChildId, "c1");
+});
+
+test("canAddAlias enforces length and count limits", () => {
+  assert.equal(canAddAlias("山".repeat(21), "c1", roster()).reason, "tooLong");
+
+  const full = roster();
+  full[0].aliases = ["山田花子", "花子", "山田", "華子", "はな子"];
+  assert.equal(full[0].aliases.length, MAX_ALIASES_PER_CHILD);
+  assert.equal(canAddAlias("蓮", "c1", full).reason, "tooMany");
+  // duplicate is reported ahead of tooMany, so re-adding says "already there"
+  // rather than a confusing "too many".
+  assert.equal(canAddAlias("山田花子", "c1", full).reason, "duplicate");
+});
+
+test("canAddAlias rejects an unknown child", () => {
+  assert.equal(canAddAlias("山田花子", "cX", roster()).reason, "unknownChild");
+});
+
+// --- resolveAliasConflicts ---
+
+test("resolveAliasConflicts drops an alias colliding with another child's name", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "みらい", aliases: ["たなかたろう", "山田花子"] },
+    { childId: "c2", nameSnapshot: "たなか たろう" },
+  ];
+  assert.deepEqual(resolveAliasConflicts(c)[0].aliases, ["山田花子"]);
+});
+
+test("resolveAliasConflicts drops BOTH copies when two children claim one alias", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["花子"] },
+    { childId: "c2", nameSnapshot: "すずき はなこ", aliases: ["花子"] },
+  ];
+  const resolved = resolveAliasConflicts(c);
+  assert.deepEqual(resolved[0].aliases, []);
+  assert.deepEqual(resolved[1].aliases, []);
+});
+
+test("resolveAliasConflicts keeps an alias that only overlaps its OWN child's name", () => {
+  const c = [{ childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["はなこ"] }];
+  assert.deepEqual(resolveAliasConflicts(c)[0].aliases, ["はなこ"]);
+});
+
+test("resolveAliasConflicts leaves unrelated aliases alone and tolerates bad input", () => {
+  assert.deepEqual(resolveAliasConflicts(withAliases())[0].aliases, ["山田花子"]);
+  assert.deepEqual(resolveAliasConflicts(withAliases())[2].aliases, []);
+  assert.deepEqual(resolveAliasConflicts([]), []);
+  assert.deepEqual(resolveAliasConflicts(undefined), []);
+  const messy = [{ childId: "c1", nameSnapshot: "はなこ", aliases: ["", null, "  "] }];
+  assert.deepEqual(resolveAliasConflicts(messy)[0].aliases, []);
+});
+
+// --- isLearnableTranscript ---
+
+test("isLearnableTranscript accepts kanji only", () => {
+  assert.equal(isLearnableTranscript("山田花子"), true);
+  assert.equal(isLearnableTranscript("舞"), true);
+  // Kana misses are playground chatter or mishearings, not readings to keep.
+  assert.equal(isLearnableTranscript("やまだはなこ"), false);
+  assert.equal(isLearnableTranscript("こんにちは"), false);
+  assert.equal(isLearnableTranscript(""), false);
+  assert.equal(isLearnableTranscript(null), false);
+  // A whole sentence is not a name.
+  assert.equal(isLearnableTranscript("今日は天気が良いので公園に行きましょうかね皆さん"), false);
 });

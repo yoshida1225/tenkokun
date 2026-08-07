@@ -4,14 +4,24 @@ import * as confirmDialog from "./components/confirmDialog.js";
 import { showToast } from "./components/toast.js";
 import * as photoCropModal from "./components/photoCropModal.js";
 import { getPhotoObjectURL } from "../storage.js";
-import { getChildById } from "../roster.js";
+import { getChildById, getVoiceAliases } from "../roster.js";
 import { GROUP_PRESETS } from "../constants.js";
+import { canAddAlias } from "../voice.js";
 
 let editingChildId = null;
 let pendingPhotoBlob = null;
 let pendingPhotoRemoved = false;
 let tags = [];
+let voiceAliases = [];
 let previewObjectUrl = null;
+
+const ALIAS_REJECTION_MESSAGES = {
+  empty: "呼び方を入力してください",
+  tooShort: "短すぎます。漢字1文字は登録できます",
+  tooLong: "長すぎます",
+  duplicate: "すでに登録されています",
+  tooMany: "これ以上は登録できません。古いものを削除してください",
+};
 
 export function mount(container, params) {
   editingChildId = params.childId ?? null;
@@ -19,6 +29,7 @@ export function mount(container, params) {
   pendingPhotoRemoved = false;
   const existing = editingChildId ? getChildById(getState().roster, editingChildId) : null;
   tags = existing ? [...existing.tags] : [];
+  voiceAliases = getVoiceAliases(existing);
   render(container, existing);
 }
 
@@ -169,6 +180,75 @@ function render(container, existing) {
   }
   renderTags();
 
+  // Voice aliases. Only for existing children: there is nothing to have heard
+  // yet for a child being created, and no childId to validate against.
+  if (existing) {
+    const aliasField = document.createElement("div");
+    aliasField.className = "field";
+    aliasField.innerHTML = `
+      <label>音声での呼び方</label>
+      <div class="settings-row__desc">音声認識がこの子をどう聞き取るかを登録します。点呼中に「覚える」を押すと自動で増えます。</div>
+    `;
+    const aliasList = document.createElement("div");
+    aliasList.className = "tag-list";
+    aliasField.appendChild(aliasList);
+
+    const aliasRow = document.createElement("div");
+    aliasRow.style.display = "flex";
+    aliasRow.style.gap = "var(--space-2)";
+    const aliasInput = document.createElement("input");
+    aliasInput.type = "text";
+    aliasInput.placeholder = "山田花子";
+    aliasInput.style.flex = "1";
+    const aliasAddBtn = document.createElement("button");
+    aliasAddBtn.type = "button";
+    aliasAddBtn.className = "btn btn--secondary btn--sm";
+    aliasAddBtn.textContent = "追加";
+    aliasRow.appendChild(aliasInput);
+    aliasRow.appendChild(aliasAddBtn);
+    aliasField.appendChild(aliasRow);
+    scroll.appendChild(aliasField);
+
+    function renderAliases() {
+      aliasList.innerHTML = "";
+      for (const alias of voiceAliases) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip chip--tappable";
+        chip.textContent = `${alias} ×`;
+        chip.addEventListener("click", () => {
+          voiceAliases = voiceAliases.filter((a) => a !== alias);
+          renderAliases();
+        });
+        aliasList.appendChild(chip);
+      }
+    }
+    renderAliases();
+
+    aliasAddBtn.addEventListener("click", () => {
+      // Validate against the whole roster with this child's in-progress edits,
+      // so an alias that would collide with another child is refused here too.
+      const candidates = getState().roster.map((c) =>
+        c.childId === existing.childId
+          ? { childId: c.childId, nameSnapshot: nameInput.value.trim() || c.name, aliases: voiceAliases }
+          : { childId: c.childId, nameSnapshot: c.name, aliases: getVoiceAliases(c) }
+      );
+      const verdict = canAddAlias(aliasInput.value, existing.childId, candidates);
+      if (!verdict.ok) {
+        if (verdict.reason === "conflict") {
+          const other = getChildById(getState().roster, verdict.conflictChildId)?.name ?? "他の子";
+          showToast(`${other} さんと紛らわしいため登録できません`);
+        } else {
+          showToast(ALIAS_REJECTION_MESSAGES[verdict.reason] ?? "登録できません");
+        }
+        return;
+      }
+      voiceAliases = [...voiceAliases, verdict.value];
+      aliasInput.value = "";
+      renderAliases();
+    });
+  }
+
   container.appendChild(scroll);
 
   if (existing) {
@@ -210,6 +290,7 @@ function render(container, existing) {
       childId: existing?.childId,
       name,
       tags,
+      voiceAliases,
       photoBlob: pendingPhotoBlob,
       removePhoto: pendingPhotoRemoved,
     });

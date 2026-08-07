@@ -1,6 +1,16 @@
-import { getState, subscribe, recordCheckpoint, toggleConfirm, revokeExitEvent, confirmChild } from "../state.js";
+import {
+  getState,
+  subscribe,
+  recordCheckpoint,
+  toggleConfirm,
+  revokeExitEvent,
+  confirmChild,
+  addVoiceAlias,
+  removeVoiceAlias,
+} from "../state.js";
 import * as router from "../router.js";
 import { activeParticipantIds, computeCarriedOverUnconfirmed } from "../session.js";
+import { getChildById, getVoiceAliases } from "../roster.js";
 import { createTile } from "./components/tile.js";
 import { formatTime } from "../utils/date.js";
 import { consumeHighlight, setHighlight } from "./highlight.js";
@@ -122,6 +132,9 @@ function render(container) {
     tab.className = `checkpoint-tab${cp.checkpointId === currentCheckpointId ? " checkpoint-tab--active" : ""}`;
     tab.textContent = cp.label;
     tab.addEventListener("click", () => {
+      // Not in render() — that runs on every confirm and would kill a pending
+      // offer instantly. Switching tabs really is a change of context though.
+      clearPendingLearn();
       currentCheckpointId = cp.checkpointId;
       render(container);
     });
@@ -171,7 +184,12 @@ function render(container) {
       name: p.nameSnapshot,
       photoRef: p.photoSnapshot,
       status: checked ? "checked" : "default",
-      onClick: () => toggleConfirm(checkpoint.checkpointId, childId),
+      onClick: () => {
+        toggleConfirm(checkpoint.checkpointId, childId);
+        // Only the unconfirmed -> confirmed direction. Un-checking a tile is a
+        // correction, not the caregiver telling us who they just said.
+        if (!checked) offerAliasLearn(childId, checkpoint.checkpointId);
+      },
     });
     tileRevokers.push(revoke);
     if (childId === highlightChildId) {
@@ -274,6 +292,11 @@ const MAX_RESTARTS_WITHOUT_RESULT = 8;
 const MAX_LISTEN_MS = 3 * 60 * 1000;
 const UNMATCHED_TOAST_COOLDOWN_MS = 4000;
 const TOAST_SHORT = 1600;
+// How long an unmatched transcript stays eligible to be taught, and how long
+// the offer stays on screen — one constant so they can never diverge. Short on
+// purpose: the repair loop (hear the miss, look at the grid, tap the tile) is
+// 2-5 seconds, and past that we would be guessing at intent.
+const LEARN_WINDOW_MS = 8000;
 
 const VOICE_ERROR_MESSAGES = {
   "no-speech": "声が聞き取れませんでした",
@@ -293,6 +316,9 @@ let consecutiveNoSpeech = 0;
 let restartCount = 0;
 let confirmedByVoiceCount = 0;
 let lastUnmatchedToastAt = 0;
+let pendingLearn = null; // { transcript, sessionId, checkpointId, at }
+let pendingLearnTimer = null;
+let learnOfferDismiss = null;
 
 // Resolve the button from the DOM every time. render() rebuilds the footer
 // after every confirmed name, so a captured reference goes stale immediately.
@@ -421,17 +447,39 @@ function onVoiceError(event) {
   failVoice(`音声認識でエラーが発生しました (${code})`);
 }
 
+// Names come from the session snapshot (evidence, frozen for this walk);
+// aliases come from the LIVE roster. Aliases are recognizer configuration, not
+// a record of the walk, so freezing them would mean writing to two places at
+// once — and if the roster write failed on quota while the session write
+// succeeded, an alias would work today and silently vanish forever.
+function voiceCandidates(session, checkpointId) {
+  const activeIds = activeParticipantIds(session, checkpointId);
+  const { roster: liveRoster } = getState();
+  return voice.resolveAliasConflicts(
+    session.participants
+      .filter((p) => activeIds.includes(p.childId))
+      .map((p) => ({
+        childId: p.childId,
+        nameSnapshot: p.nameSnapshot,
+        aliases: getVoiceAliases(getChildById(liveRoster, p.childId)),
+      }))
+  );
+}
+
 function onVoiceResult(event) {
   const { activeSession: current } = getState();
   if (!current || !currentCheckpointId) return;
   // Read the checkpoint from module state, not a closure, so switching tabs
   // while listening confirms into the tab actually on screen.
-  const activeIdsNow = activeParticipantIds(current, currentCheckpointId);
-  const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
+  const candidates = voiceCandidates(current, currentCheckpointId);
 
   for (let i = event.resultIndex; i < event.results.length; i += 1) {
     const result = event.results[i];
     if (!result.isFinal) continue;
+
+    // Any new utterance invalidates a pending offer — the caregiver has moved
+    // on, and two offers naming two transcripts is how you tap the wrong one.
+    clearPendingLearn();
 
     const { childId, transcript } = voice.matchFromResult(result, candidates);
     restartCount = 0;
@@ -445,17 +493,113 @@ function onVoiceResult(event) {
       // render() -> consumeHighlight() synchronously.
       setHighlight(childId, "voice");
       confirmChild(currentCheckpointId, childId);
-    } else if (transcript && transcript.trim().length >= 2) {
+    } else if (transcript) {
+      const trimmed = transcript.trim();
+      const learnable = voice.isLearnableTranscript(trimmed);
+      // Eligibility is set OUTSIDE the toast cooldown: the cooldown throttles
+      // toast spam, and letting it also gate learning would make the second of
+      // two quick misses un-learnable for no reason.
+      if (learnable) {
+        pendingLearn = {
+          transcript: trimmed,
+          sessionId: current.sessionId,
+          checkpointId: currentCheckpointId,
+          at: Date.now(),
+        };
+        pendingLearnTimer = setTimeout(clearPendingLearn, LEARN_WINDOW_MS);
+      }
+      // Two characters filters out grunts and stray syllables — but a single
+      // kanji is a real given name (舞/蓮/葵/健), so anything learnable is
+      // worth surfacing even at one character.
+      if (trimmed.length < 2 && !learnable) continue;
       const now = Date.now();
       if (now - lastUnmatchedToastAt > UNMATCHED_TOAST_COOLDOWN_MS) {
         lastUnmatchedToastAt = now;
-        showToast(`「${transcript}」は分かりませんでした。タップで確認を`, { duration: TOAST_SHORT });
+        showToast(`「${trimmed}」は分かりませんでした。タップで確認を`, { duration: TOAST_SHORT });
       }
     }
   }
 }
 
+// --- Teaching the recognizer a child's name ---
+//
+// iOS returns kanji (「山田花子」) for a hiragana roster, which can never match.
+// Rather than ship a dictionary, learn from the caregiver at the one moment
+// their intent is unambiguous: the tap they were about to make anyway.
+
+function clearPendingLearn() {
+  pendingLearn = null;
+  clearTimeout(pendingLearnTimer);
+  pendingLearnTimer = null;
+  learnOfferDismiss?.();
+  learnOfferDismiss = null;
+}
+
+function offerAliasLearn(childId, checkpointId) {
+  const p = pendingLearn;
+  if (!p) return;
+
+  const { activeSession: current, roster: liveRoster } = getState();
+  if (!current || current.sessionId !== p.sessionId || checkpointId !== p.checkpointId) {
+    return clearPendingLearn();
+  }
+  if (Date.now() - p.at > LEARN_WINDOW_MS) return clearPendingLearn();
+
+  const transcript = p.transcript;
+  clearPendingLearn(); // consume before anything can re-enter
+
+  // Checked against the WHOLE roster, not just this walk's participants: a
+  // child who stayed home today would still collide next week.
+  const rosterCandidates = liveRoster.map((c) => ({
+    childId: c.childId,
+    nameSnapshot: c.name,
+    aliases: getVoiceAliases(c),
+  }));
+  const verdict = voice.canAddAlias(transcript, childId, rosterCandidates);
+  const name = getChildById(liveRoster, childId)?.name ?? "この子";
+
+  if (!verdict.ok) {
+    // Only a conflict is worth interrupting for — it is real safety feedback.
+    // duplicate/tooShort/tooLong/tooMany stay silent.
+    if (verdict.reason === "conflict") {
+      const other = getChildById(liveRoster, verdict.conflictChildId)?.name ?? "他の子";
+      showToast(`「${transcript}」は ${other} さんと紛らわしいため覚えられません`);
+    }
+    return;
+  }
+
+  // Safe despite toggleConfirm having just re-rendered the screen
+  // synchronously: #toast-root lives outside the screen container.
+  learnOfferDismiss = showToast(`「${transcript}」を ${name} さんの呼び方として覚えますか?`, {
+    duration: LEARN_WINDOW_MS,
+    actionLabel: "覚える",
+    onAction: () => commitAlias(childId, transcript, name),
+  });
+}
+
+function commitAlias(childId, transcript, name) {
+  learnOfferDismiss = null;
+  const result = addVoiceAlias(childId, transcript);
+  if (!result.ok) {
+    showToast("保存できませんでした。端末の空き容量を確認してください");
+    return;
+  }
+  // The "wrong tile" realization arrives a second or two later, so give it a
+  // way back.
+  showToast(`「${transcript}」を ${name} さんの呼び方に登録しました`, {
+    duration: 6000,
+    actionLabel: "取り消す",
+    onAction: () => {
+      removeVoiceAlias(childId, transcript);
+      showToast("登録を取り消しました", { duration: TOAST_SHORT });
+    },
+  });
+}
+
 function stopVoice({ hard = false, summary = false } = {}) {
+  // Single funnel: this covers mic-off, overlay open, backgrounding, pagehide,
+  // the 3-minute auto-off, failVoice and unmount in one line.
+  clearPendingLearn();
   const wasListening = voiceListening;
   voiceListening = false;
   clearTimeout(restartTimer);

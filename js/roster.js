@@ -1,18 +1,46 @@
 import { generateId } from "./utils/id.js";
-import { GROUP_PRESETS } from "./constants.js";
+import { GROUP_PRESETS, MAX_ALIASES_PER_CHILD } from "./constants.js";
+import { canon } from "./utils/kana.js";
 
 // Pure roster domain logic. No DOM/storage access here (see plan 9-1) —
 // photo I/O and persistence are orchestrated by state.js so this module
 // stays testable with plain arrays (plan 14-1).
 
-export function createChild({ name, tags = [] }, { now = Date.now() } = {}) {
+export function createChild({ name, tags = [], voiceAliases = [] }, { now = Date.now() } = {}) {
   return {
     childId: generateId("c"),
     name: name.trim(),
     tags: [...tags],
+    voiceAliases: [...voiceAliases],
     photoRef: null,
     createdAt: new Date(now).toISOString(),
   };
+}
+
+// --- Voice aliases ---
+//
+// What the speech recognizer actually returns for this child, e.g. 「山田花子」
+// for a roster entry of 「やまだ はなこ」. Stored RAW so the chips stay legible
+// and so improvements to canon() apply retroactively; compared by canon.
+// Children created before this feature have no key, hence the ?? [] here.
+
+export function getVoiceAliases(child) {
+  return child?.voiceAliases ?? [];
+}
+
+export function addVoiceAlias(child, alias) {
+  const raw = (alias ?? "").trim();
+  const target = canon(raw);
+  const current = getVoiceAliases(child);
+  if (!target) return { ...child, voiceAliases: [...current] };
+  if (current.some((a) => canon(a) === target)) return { ...child, voiceAliases: [...current] };
+  if (current.length >= MAX_ALIASES_PER_CHILD) return { ...child, voiceAliases: [...current] };
+  return { ...child, voiceAliases: [...current, raw] };
+}
+
+export function removeVoiceAlias(child, alias) {
+  const target = canon(alias);
+  return { ...child, voiceAliases: getVoiceAliases(child).filter((a) => canon(a) !== target) };
 }
 
 export function upsertChild(children, child) {

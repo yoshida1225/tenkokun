@@ -21,13 +21,20 @@ function buildToastEl(message, { actionLabel, onAction } = {}) {
   return el;
 }
 
-export function showToast(message, { duration = 3000 } = {}) {
-  const el = buildToastEl(message);
+export function showToast(message, { duration = 3000, actionLabel, onAction } = {}) {
+  const el = buildToastEl(message, { actionLabel, onAction });
   root()?.appendChild(el);
-  setTimeout(() => el.remove(), duration);
-  return () => el.remove();
+  const timer = setTimeout(() => el.remove(), duration);
+  return () => {
+    clearTimeout(timer);
+    el.remove();
+  };
 }
 
+// NOTE: never use this over the roll-call screen. .toast-root sits at the
+// bottom edge with pointer-events:auto, directly on top of .sticky-footer —
+// a toast that never dismisses would swallow taps on the record and mic
+// buttons for the rest of the walk. Use showToast with a duration instead.
 export function showPersistent(message, { actionLabel, onAction } = {}) {
   const el = buildToastEl(message, { actionLabel, onAction });
   root()?.appendChild(el);

@@ -1,8 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { toCsv } from "../js/utils/csv.js";
-import { validateBackupShape, buildSessionCsvRows, buildHistoryCsvRows } from "../js/backup.js";
+import {
+  validateBackupShape,
+  buildSessionCsvRows,
+  buildHistoryCsvRows,
+  normalizeBackupChild,
+} from "../js/backup.js";
 import { createSession, toggleConfirm, recordCheckpoint, addExitEvent } from "../js/session.js";
+import { MAX_ALIASES_PER_CHILD } from "../js/constants.js";
 
 test("toCsv escapes quotes and joins with CRLF", () => {
   const csv = toCsv([
@@ -18,6 +24,53 @@ test("validateBackupShape rejects malformed or foreign JSON", () => {
   assert.equal(validateBackupShape({ schemaVersion: 1 }), false);
   assert.equal(validateBackupShape(null), false);
   assert.equal(validateBackupShape("not an object"), false);
+});
+
+// Export spreads the whole child, so the round-trip only breaks on import.
+test("normalizeBackupChild preserves voiceAliases", () => {
+  const child = normalizeBackupChild({
+    childId: "c1",
+    name: "やまだ はなこ",
+    tags: ["くるみ"],
+    voiceAliases: ["山田花子"],
+  });
+  assert.deepEqual(child.voiceAliases, ["山田花子"]);
+  assert.deepEqual(child.tags, ["くるみ"]);
+  assert.equal(child.photoRef, null);
+});
+
+test("normalizeBackupChild defaults voiceAliases for older backups", () => {
+  assert.deepEqual(normalizeBackupChild({ childId: "c1", name: "はなこ" }).voiceAliases, []);
+  assert.deepEqual(
+    normalizeBackupChild({ childId: "c1", name: "はなこ", voiceAliases: "nope" }).voiceAliases,
+    []
+  );
+  assert.deepEqual(
+    normalizeBackupChild({ childId: "c1", name: "はなこ", voiceAliases: 42 }).voiceAliases,
+    []
+  );
+});
+
+test("normalizeBackupChild filters junk entries and caps the alias list", () => {
+  const messy = normalizeBackupChild({
+    childId: "c1",
+    name: "はなこ",
+    voiceAliases: [1, "", "   ", null, "山田花子", { a: 1 }],
+  });
+  assert.deepEqual(messy.voiceAliases, ["山田花子"]);
+
+  const overflowing = normalizeBackupChild({
+    childId: "c1",
+    name: "はなこ",
+    voiceAliases: ["a", "b", "c", "d", "e", "f", "g"],
+  });
+  assert.equal(overflowing.voiceAliases.length, MAX_ALIASES_PER_CHILD);
+});
+
+test("normalizeBackupChild rejects rows without an id or name", () => {
+  assert.equal(normalizeBackupChild({ name: "はなこ" }), null);
+  assert.equal(normalizeBackupChild({ childId: "c1" }), null);
+  assert.equal(normalizeBackupChild(null), null);
 });
 
 test("buildSessionCsvRows includes recorded checkpoints and exit events", () => {

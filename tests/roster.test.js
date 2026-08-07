@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createChild, upsertChild, removeChild, getChildById, searchRoster, listTags } from "../js/roster.js";
+import {
+  createChild,
+  upsertChild,
+  removeChild,
+  getChildById,
+  searchRoster,
+  listTags,
+  addVoiceAlias,
+  removeVoiceAlias,
+  getVoiceAliases,
+} from "../js/roster.js";
+import { MAX_ALIASES_PER_CHILD } from "../js/constants.js";
 
 test("createChild trims name and copies tags", () => {
   const child = createChild({ name: "  たろう  ", tags: ["ひまわり組"] }, { now: 0 });
@@ -8,6 +19,49 @@ test("createChild trims name and copies tags", () => {
   assert.deepEqual(child.tags, ["ひまわり組"]);
   assert.equal(child.photoRef, null);
   assert.ok(child.childId.startsWith("c_"));
+});
+
+test("createChild starts with an empty voiceAliases list", () => {
+  assert.deepEqual(createChild({ name: "たろう" }, { now: 0 }).voiceAliases, []);
+});
+
+test("addVoiceAlias returns a new object and leaves the original alone", () => {
+  const child = createChild({ name: "やまだ はなこ" }, { now: 0 });
+  const next = addVoiceAlias(child, "山田花子");
+  assert.deepEqual(next.voiceAliases, ["山田花子"]);
+  assert.deepEqual(child.voiceAliases, []);
+});
+
+test("addVoiceAlias dedupes by canon and keeps the first raw form", () => {
+  let child = createChild({ name: "やまだ はなこ" }, { now: 0 });
+  child = addVoiceAlias(child, "山田花子");
+  child = addVoiceAlias(child, "山田 花子さん"); // same after canon
+  assert.deepEqual(child.voiceAliases, ["山田花子"]);
+});
+
+test("addVoiceAlias ignores blank input and respects the cap", () => {
+  let child = createChild({ name: "やまだ はなこ" }, { now: 0 });
+  child = addVoiceAlias(child, "   ");
+  assert.deepEqual(child.voiceAliases, []);
+
+  for (const a of ["山田花子", "花子", "山田", "華子", "はな子", "溢れる分"]) {
+    child = addVoiceAlias(child, a);
+  }
+  assert.equal(child.voiceAliases.length, MAX_ALIASES_PER_CHILD);
+});
+
+test("removeVoiceAlias matches by canon, so a raw variant also removes", () => {
+  let child = addVoiceAlias(createChild({ name: "はなこ" }, { now: 0 }), "山田花子");
+  child = removeVoiceAlias(child, "山田 花子ちゃん");
+  assert.deepEqual(child.voiceAliases, []);
+});
+
+// Children saved before this feature have no voiceAliases key at all.
+test("alias helpers tolerate a legacy child with no voiceAliases key", () => {
+  const legacy = { childId: "c1", name: "はなこ", tags: [], photoRef: null };
+  assert.deepEqual(getVoiceAliases(legacy), []);
+  assert.deepEqual(addVoiceAlias(legacy, "山田花子").voiceAliases, ["山田花子"]);
+  assert.deepEqual(removeVoiceAlias(legacy, "山田花子").voiceAliases, []);
 });
 
 test("upsertChild inserts new and updates existing", () => {

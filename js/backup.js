@@ -2,6 +2,7 @@ import { getState } from "./state.js";
 import * as storage from "./storage.js";
 import { toCsv, downloadCsv } from "./utils/csv.js";
 import { formatDateTime, formatTime } from "./utils/date.js";
+import { MAX_ALIASES_PER_CHILD } from "./constants.js";
 
 const SCHEMA_VERSION = 1;
 
@@ -53,6 +54,27 @@ export function validateBackupShape(data) {
   return !!(data && typeof data.schemaVersion === "number" && Array.isArray(data.roster));
 }
 
+// Export spreads the whole child, but import whitelists — so any field missed
+// here is silently dropped while still looking intact in the JSON file. Pure
+// and separate from the photo I/O so it can be tested directly.
+// No SCHEMA_VERSION bump needed: every field added here is optional with a
+// default, so older backups still restore cleanly.
+export function normalizeBackupChild(item) {
+  if (!item?.childId || !item?.name) return null;
+  return {
+    childId: item.childId,
+    name: item.name,
+    tags: Array.isArray(item.tags) ? item.tags : [],
+    voiceAliases: Array.isArray(item.voiceAliases)
+      ? item.voiceAliases
+          .filter((a) => typeof a === "string" && a.trim())
+          .slice(0, MAX_ALIASES_PER_CHILD)
+      : [],
+    photoRef: null,
+    createdAt: item.createdAt || new Date().toISOString(),
+  };
+}
+
 export async function importRosterBackup(file) {
   let data;
   try {
@@ -66,14 +88,8 @@ export async function importRosterBackup(file) {
 
   const children = [];
   for (const item of data.roster) {
-    if (!item.childId || !item.name) continue;
-    const child = {
-      childId: item.childId,
-      name: item.name,
-      tags: Array.isArray(item.tags) ? item.tags : [],
-      photoRef: null,
-      createdAt: item.createdAt || new Date().toISOString(),
-    };
+    const child = normalizeBackupChild(item);
+    if (!child) continue;
     if (item.photoDataUrl) {
       try {
         const blob = await dataUrlToBlob(item.photoDataUrl);

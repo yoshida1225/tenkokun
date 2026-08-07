@@ -74,11 +74,11 @@ export async function sweepOrphanPhotos() {
 
 // --- Roster ---
 
-export async function saveChild({ childId, name, tags, photoBlob, removePhoto = false }) {
+export async function saveChild({ childId, name, tags, voiceAliases = [], photoBlob, removePhoto = false }) {
   const existing = childId ? roster.getChildById(state.roster, childId) : null;
   const child = existing
-    ? { ...existing, name: name.trim(), tags: [...tags] }
-    : roster.createChild({ name, tags });
+    ? { ...existing, name: name.trim(), tags: [...tags], voiceAliases: [...voiceAliases] }
+    : roster.createChild({ name, tags, voiceAliases });
 
   let photoError = false;
   if (removePhoto && existing?.photoRef) {
@@ -99,6 +99,31 @@ export async function saveChild({ childId, name, tags, photoBlob, removePhoto = 
   const writeResult = storage.setRosterRaw(state.roster);
   notify("roster:changed");
   return { ok: writeResult.ok, child, photoError };
+}
+
+// Alias writes go through these rather than saveChild: saveChild requires
+// name/tags and has an async photo path, so calling it from the roll-call
+// screen mid-walk could clobber a concurrent edit. These are synchronous and
+// touch nothing but voiceAliases.
+
+export function addVoiceAlias(childId, alias) {
+  const existing = roster.getChildById(state.roster, childId);
+  if (!existing) return { ok: false };
+  const child = roster.addVoiceAlias(existing, alias);
+  state.roster = roster.upsertChild(state.roster, child);
+  const writeResult = storage.setRosterRaw(state.roster);
+  notify("roster:changed");
+  return { ok: writeResult.ok, child };
+}
+
+export function removeVoiceAlias(childId, alias) {
+  const existing = roster.getChildById(state.roster, childId);
+  if (!existing) return { ok: false };
+  const child = roster.removeVoiceAlias(existing, alias);
+  state.roster = roster.upsertChild(state.roster, child);
+  const writeResult = storage.setRosterRaw(state.roster);
+  notify("roster:changed");
+  return { ok: writeResult.ok, child };
 }
 
 export function deleteChild(childId) {
