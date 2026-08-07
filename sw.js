@@ -1,7 +1,7 @@
 // Bump this on every deploy that touches cached files (ASSETS below, or any
 // JS/CSS it imports) — the browser only checks for a SW update when sw.js's
 // own bytes change, so an unbumped version means the PWA never updates.
-const CACHE_VERSION = "v18";
+const CACHE_VERSION = "v19";
 const CACHE_NAME = `tenkokun-static-${CACHE_VERSION}`;
 
 const ASSETS = [

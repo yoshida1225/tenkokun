@@ -218,21 +218,72 @@ export function matchFromResult(result, candidates) {
 
 // --- Alias safety ---
 
-// Whether a failed transcript is worth offering to remember. Two shapes
-// qualify, both confirmed failure modes of a hiragana roster:
+// Whether a failed transcript is worth REMEMBERING as a candidate. Three
+// shapes qualify:
 //   kanji         — the recognizer knows the name and writes it 「山田花子」
 //   all katakana  — it does not know the name and spells the sound 「ユート」,
 //                   which misses whenever the reading is not letter-for-letter
 //                   the roster spelling
-// A miss written in HIRAGANA is still refused: hiragana matches the roster
-// natively, so a hiragana miss is playground chatter or a genuine mishearing,
-// and neither belongs in permanent config. Those can still be added by hand
-// from the child edit screen.
+//   plain kana    — a near-miss of the roster spelling 「のんか」 for 「ののか」.
+//                   Short soft names come back slightly wrong rather than in
+//                   another script, and there was no way at all to teach that
+//                   during a walk: the offer never appeared.
+//
+// The kana case is deliberately NOT decided here. This runs before a tile has
+// been tapped, so there is no child to compare against yet — it only keeps the
+// transcript alive long enough for isPlausibleVoiceAlias to judge it once the
+// caregiver has pointed at someone.
 export function isLearnableTranscript(transcript) {
   const raw = (transcript ?? "").trim();
   if (!raw || raw.length > MAX_ALIAS_LENGTH) return false;
-  if (!containsKanji(raw) && !isKatakanaOnly(raw)) return false;
-  return canon(raw).length > 0;
+  if (containsKanji(raw) || isKatakanaOnly(raw)) return canon(raw).length > 0;
+  // Two characters, because a lone kana is noise and every kana utterance now
+  // reaches this point.
+  return canon(raw).length >= 2;
+}
+
+// Levenshtein, on strings of at most MAX_ALIAS_LENGTH.
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i += 1) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+// The roster holds full names, but a caregiver calls the given name alone, so
+// a mishearing has to be measured against the parts too — 「はなご」 is one
+// character off 「はなこ」 and five off 「やまだはなこ」.
+function nameForms(nameSnapshot) {
+  const whole = canon(nameSnapshot);
+  const parts = String(nameSnapshot ?? "")
+    .split(/\s+/)
+    .map(canon)
+    .filter((p) => p.length >= 2);
+  return [...new Set([whole, ...parts])].filter(Boolean);
+}
+
+// Guards the VOICE-taught path only, and only for plain kana.
+//
+// Kanji and katakana are self-evidently the recognizer rewriting a name, so
+// they pass. Plain kana is not: it is also what ordinary talk looks like, and
+// every kana utterance now arrives here as a candidate. Requiring it to be a
+// near-miss of the child's own name is what separates 「のんか」 from 「そうだね」
+// without asking the caregiver to notice the difference.
+//
+// Typing an alias by hand on the child edit screen is NOT filtered by this.
+// That is a deliberate act with the roster in front of you; this is a judgement
+// made on the caregiver's behalf mid-walk.
+export function isPlausibleVoiceAlias(transcript, nameSnapshot) {
+  const a = canon(transcript);
+  if (!a) return false;
+  if (containsKanji(transcript) || isKatakanaOnly(transcript)) return true;
+  // One edit for a short given name, proportionally more for a long full name.
+  return nameForms(nameSnapshot).some((f) => editDistance(a, f) <= Math.max(1, Math.floor(f.length / 3)));
 }
 
 // Can `alias` be attached to `childId` without creating an ambiguity?

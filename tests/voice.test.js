@@ -7,6 +7,7 @@ import {
   canAddAlias,
   resolveAliasConflicts,
   isLearnableTranscript,
+  isPlausibleVoiceAlias,
   canon,
   MAX_ALIASES_PER_CHILD,
 } from "../js/voice.js";
@@ -302,12 +303,14 @@ test("isLearnableTranscript accepts kanji and katakana", () => {
   assert.equal(isLearnableTranscript("ハナコ"), true);
   assert.equal(isLearnableTranscript("ヤマダ ハナコ"), true);
   assert.equal(isLearnableTranscript("ハナコちゃん"), true);
-  // Hiragana matches the roster natively, so a hiragana miss is chatter.
-  assert.equal(isLearnableTranscript("やまだはなこ"), false);
-  assert.equal(isLearnableTranscript("こんにちは"), false);
-  // Mixed katakana and hiragana is a sentence, not a name.
-  assert.equal(isLearnableTranscript("バスがきたよ"), false);
-  assert.equal(isLearnableTranscript("ハナコとあそぶ"), false);
+  // Kana is kept as a CANDIDATE — whether it is really a mishearing of a name
+  // cannot be known until a tile is tapped, and isPlausibleVoiceAlias decides
+  // it there. So chatter passes this gate and is rejected at the next one.
+  assert.equal(isLearnableTranscript("のんか"), true);
+  assert.equal(isLearnableTranscript("こんにちは"), true);
+  assert.equal(isLearnableTranscript("バスがきたよ"), true);
+  // A lone kana is noise in any reading.
+  assert.equal(isLearnableTranscript("あ"), false);
   assert.equal(isLearnableTranscript(""), false);
   assert.equal(isLearnableTranscript(null), false);
   // A whole sentence is not a name.
@@ -447,4 +450,32 @@ test("matchFromResult still falls back to the substring tier alone", () => {
   // Nothing to make a list out of, so the vaguest evidence is all there is.
   const { childIds } = matchFromResult(fakeResult("やまだはなこです"), roster());
   assert.deepEqual(childIds, ["c1"]);
+});
+
+// --- isPlausibleVoiceAlias: the kana gate on the voice-taught path ---
+
+test("isPlausibleVoiceAlias waves through kanji and katakana", () => {
+  assert.equal(isPlausibleVoiceAlias("野々花", "ののか"), true);
+  assert.equal(isPlausibleVoiceAlias("ノノカ", "ののか"), true);
+  // Not even close to the name, but the script says "the recognizer rewrote a
+  // name" and the caregiver is pointing at the child.
+  assert.equal(isPlausibleVoiceAlias("山田花子", "ののか"), true);
+});
+
+test("isPlausibleVoiceAlias accepts a kana near-miss of the name", () => {
+  // The reported problem: 「ののか」 comes back a character wrong and stays
+  // untaught because the offer never appeared.
+  assert.equal(isPlausibleVoiceAlias("のんか", "ののか"), true);
+  assert.equal(isPlausibleVoiceAlias("ののが", "ののか"), true);
+  // Measured against the given name too, not just the full roster spelling.
+  assert.equal(isPlausibleVoiceAlias("はなご", "やまだ はなこ"), true);
+  assert.equal(isPlausibleVoiceAlias("やまだはなご", "やまだ はなこ"), true);
+});
+
+test("isPlausibleVoiceAlias rejects kana that is just talk", () => {
+  assert.equal(isPlausibleVoiceAlias("そうだね", "ののか"), false);
+  assert.equal(isPlausibleVoiceAlias("こんにちは", "ののか"), false);
+  assert.equal(isPlausibleVoiceAlias("バスがきたよ", "やまだ はなこ"), false);
+  assert.equal(isPlausibleVoiceAlias("", "ののか"), false);
+  assert.equal(isPlausibleVoiceAlias("のんか", ""), false);
 });

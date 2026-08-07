@@ -591,6 +591,15 @@ function offerAliasLearn(childId, checkpointId) {
   const transcript = p.transcript;
   clearPendingLearn(); // consume before anything can re-enter
 
+  const name = getChildById(liveRoster, childId)?.name ?? "この子";
+
+  // The one branch that deliberately says NOTHING. Plain kana reaches here
+  // after any unmatched talk, not just after a name — so for kana that looks
+  // nothing like this child, rejection is the ordinary case, and announcing it
+  // would put a toast on top of most ordinary confirm taps. Kanji and katakana
+  // always pass this and keep their explanations below.
+  if (!voice.isPlausibleVoiceAlias(transcript, name)) return;
+
   // Checked against the WHOLE roster, not just this walk's participants: a
   // child who stayed home today would still collide next week.
   const rosterCandidates = liveRoster.map((c) => ({
@@ -599,7 +608,6 @@ function offerAliasLearn(childId, checkpointId) {
     aliases: getVoiceAliases(c),
   }));
   const verdict = voice.canAddAlias(transcript, childId, rosterCandidates);
-  const name = getChildById(liveRoster, childId)?.name ?? "この子";
 
   if (!verdict.ok) {
     // Every branch says something. A tap that produces nothing is the exact
