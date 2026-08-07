@@ -1,17 +1,18 @@
 // Voice matching for roll call confirmation. An assist alongside tap, never a
 // replacement for it.
 //
-// The roster stores hiragana names, but iOS speech recognition returns KANJI
-// for common names (「やまだ はなこ」 vs 「山田花子」), which can never match as
-// text — hence "some children work, some never do". A kanji→reading dictionary
+// The roster stores hiragana names, but iOS speech recognition rewrites them:
+// KANJI for a name it knows (「やまだ はなこ」 vs 「山田花子」) and bare KATAKANA
+// for one it does not (「ゆうと」 vs 「ユート」). Neither can be relied on to
+// match as text — hence "some children work, some never do". A reading
 // is far too heavy for an offline PWA, so instead the caregiver teaches the
 // app what the recognizer actually says: per-child `voiceAliases`, matched
 // exactly. See canAddAlias/resolveAliasConflicts for the safety rules.
 
-import { canon, containsKanji } from "./utils/kana.js";
+import { canon, containsKanji, isKatakanaOnly } from "./utils/kana.js";
 import { MAX_ALIASES_PER_CHILD, MAX_ALIAS_LENGTH } from "./constants.js";
 
-export { canon, containsKanji, MAX_ALIASES_PER_CHILD, MAX_ALIAS_LENGTH };
+export { canon, containsKanji, isKatakanaOnly, MAX_ALIASES_PER_CHILD, MAX_ALIAS_LENGTH };
 
 const RecognitionCtor =
   typeof window !== "undefined" ? window.SpeechRecognition || window.webkitSpeechRecognition : null;
@@ -105,14 +106,20 @@ export function matchFromResult(result, candidates) {
 
 // --- Alias safety ---
 
-// Whether a failed transcript is worth offering to remember. Gated on kanji
-// because that is the confirmed failure mode; a kanji-free miss is playground
-// chatter or a genuine mishearing, and neither belongs in permanent config.
-// Kana mishearings can still be added by hand from the child edit screen.
+// Whether a failed transcript is worth offering to remember. Two shapes
+// qualify, both confirmed failure modes of a hiragana roster:
+//   kanji         — the recognizer knows the name and writes it 「山田花子」
+//   all katakana  — it does not know the name and spells the sound 「ユート」,
+//                   which misses whenever the reading is not letter-for-letter
+//                   the roster spelling
+// A miss written in HIRAGANA is still refused: hiragana matches the roster
+// natively, so a hiragana miss is playground chatter or a genuine mishearing,
+// and neither belongs in permanent config. Those can still be added by hand
+// from the child edit screen.
 export function isLearnableTranscript(transcript) {
   const raw = (transcript ?? "").trim();
   if (!raw || raw.length > MAX_ALIAS_LENGTH) return false;
-  if (!containsKanji(raw)) return false;
+  if (!containsKanji(raw) && !isKatakanaOnly(raw)) return false;
   return canon(raw).length > 0;
 }
 

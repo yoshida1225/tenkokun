@@ -6,6 +6,7 @@ import {
   canAddAlias,
   resolveAliasConflicts,
   isLearnableTranscript,
+  canon,
   MAX_ALIASES_PER_CHILD,
 } from "../js/voice.js";
 
@@ -285,14 +286,42 @@ test("resolveAliasConflicts leaves unrelated aliases alone and tolerates bad inp
 
 // --- isLearnableTranscript ---
 
-test("isLearnableTranscript accepts kanji only", () => {
+test("isLearnableTranscript accepts kanji and katakana", () => {
   assert.equal(isLearnableTranscript("山田花子"), true);
   assert.equal(isLearnableTranscript("舞"), true);
-  // Kana misses are playground chatter or mishearings, not readings to keep.
+  // A name the recognizer has no kanji spelling for comes back in katakana.
+  assert.equal(isLearnableTranscript("ユート"), true);
+  assert.equal(isLearnableTranscript("ハナコ"), true);
+  assert.equal(isLearnableTranscript("ヤマダ ハナコ"), true);
+  assert.equal(isLearnableTranscript("ハナコちゃん"), true);
+  // Hiragana matches the roster natively, so a hiragana miss is chatter.
   assert.equal(isLearnableTranscript("やまだはなこ"), false);
   assert.equal(isLearnableTranscript("こんにちは"), false);
+  // Mixed katakana and hiragana is a sentence, not a name.
+  assert.equal(isLearnableTranscript("バスがきたよ"), false);
+  assert.equal(isLearnableTranscript("ハナコとあそぶ"), false);
   assert.equal(isLearnableTranscript(""), false);
   assert.equal(isLearnableTranscript(null), false);
   // A whole sentence is not a name.
   assert.equal(isLearnableTranscript("今日は天気が良いので公園に行きましょうかね皆さん"), false);
+  assert.equal(isLearnableTranscript("キョウハトテモイイテンキデスネミナサンオサンポニイキマショウ"), false);
+});
+
+test("a katakana alias matches the utterance that taught it", () => {
+  // 「ユート」 canonicalizes to 「ゆと」, so it can never reach 「ゆうと」 on its
+  // own — this is the whole reason katakana has to be learnable.
+  const before = [{ childId: "c1", nameSnapshot: "ゆうと" }];
+  assert.equal(matchChildName("ユート", before), null);
+
+  const after = [{ childId: "c1", nameSnapshot: "ゆうと", aliases: ["ユート"] }];
+  assert.equal(matchChildName("ユート", after), "c1");
+  // Still matches the roster spelling, and still refuses the other child.
+  assert.equal(matchChildName("ゆうと", after), "c1");
+});
+
+test("katakana honorifics are stripped like their hiragana spellings", () => {
+  assert.equal(canon("ハナコチャン"), canon("はなこ"));
+  assert.equal(canon("ヤマダサン"), canon("やまだ"));
+  const candidates = [{ childId: "c1", nameSnapshot: "はなこ" }];
+  assert.equal(matchChildName("ハナコチャン", candidates), "c1");
 });

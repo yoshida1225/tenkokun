@@ -2,7 +2,7 @@
 // rides in a cached JS file, that one lives in the service worker process — so
 // when they disagree the device is serving stale JS out of an old cache. The
 // settings screen shows both precisely so that state stops being invisible.
-export const APP_VERSION = "v14";
+export const APP_VERSION = "v15";
 
 export const GROUP_PRESETS = ["まつぼっくり", "くるみ", "くわのみ", "つぼみ", "たね"];
 

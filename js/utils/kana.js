@@ -3,8 +3,10 @@
 // while roster.js needs canon() to dedupe aliases under Node.
 
 // Honorifics are stripped so 「はなこちゃん」 and 「はなこ」 are one form. The
-// long-vowel mark is stripped too, folding 「ゆーこ」 into 「ゆうこ」-ish shapes.
-const STRIP_PATTERN = /[\s、。,.!?！？・\-ー]|さん|ちゃん|くん|君/g;
+// katakana spellings are here too because the recognizer writes a name it does
+// not know in katakana and carries the honorific along with it 「ハナコチャン」.
+// The long-vowel mark is stripped too, folding 「ゆーこ」 into 「ゆうこ」-ish shapes.
+const STRIP_PATTERN = /[\s、。,.!?！？・\-ー]|さん|ちゃん|くん|君|サン|チャン|クン/g;
 
 function normalize(str) {
   return (str || "").normalize("NFKC").replace(STRIP_PATTERN, "").toLowerCase();
@@ -30,4 +32,19 @@ const KANJI = /[々〇〻㐀-䶿一-鿿豈-﫿]/;
 
 export function containsKanji(str) {
   return KANJI.test(str ?? "");
+}
+
+// The other shape an unrecognized name comes back in. Where a name the
+// recognizer knows becomes kanji 「山田花子」, one it does not know at all comes
+// back as bare katakana 「ユート」 — and that spelling can miss the hiragana
+// roster whenever the reading is not letter-for-letter identical (「ユート」
+// canonicalizes to 「ゆと」, never 「ゆうと」). Ambient speech comes back as mixed
+// kanji and hiragana, so an all-katakana result is a strong signal that we are
+// looking at a name rather than chatter. Checked on the STRIPPED form so
+// punctuation and honorifics do not disqualify it.
+const KATAKANA_ONLY = /^[ァ-ヶ]+$/;
+
+export function isKatakanaOnly(str) {
+  const stripped = normalize(str);
+  return stripped.length > 0 && KATAKANA_ONLY.test(stripped);
 }

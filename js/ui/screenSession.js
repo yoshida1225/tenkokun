@@ -537,7 +537,8 @@ function onVoiceResult(event) {
 
 // --- Teaching the recognizer a child's name ---
 //
-// iOS returns kanji (「山田花子」) for a hiragana roster, which can never match.
+// iOS rewrites a hiragana roster as kanji (「山田花子」) or, for a name it does
+// not know, as katakana (「ユート」) — neither reliably matches.
 // Rather than ship a dictionary, learn from the caregiver at the one moment
 // their intent is unambiguous: the tap they were about to make anyway.
 
