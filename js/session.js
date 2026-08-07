@@ -64,6 +64,14 @@ export function toggleConfirm(session, checkpointId, childId) {
   else checkpoint.confirmedChildIds.splice(idx, 1);
 }
 
+// Unconditional confirm (not a toggle) so a re-recognized name from voice
+// input can't accidentally un-confirm a child already checked off.
+export function confirmChild(session, checkpointId, childId) {
+  const checkpoint = session.checkpoints.find((cp) => cp.checkpointId === checkpointId);
+  if (!checkpoint) return;
+  if (!checkpoint.confirmedChildIds.includes(childId)) checkpoint.confirmedChildIds.push(childId);
+}
+
 export function recordCheckpoint(session, checkpointId, opts = {}) {
   const { allowUnconfirmed = false, now = Date.now() } = opts;
   const checkpoint = session.checkpoints.find((cp) => cp.checkpointId === checkpointId);

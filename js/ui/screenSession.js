@@ -1,15 +1,18 @@
-import { getState, subscribe, recordCheckpoint, toggleConfirm, revokeExitEvent } from "../state.js";
+import { getState, subscribe, recordCheckpoint, toggleConfirm, revokeExitEvent, confirmChild } from "../state.js";
 import * as router from "../router.js";
 import { activeParticipantIds, computeCarriedOverUnconfirmed } from "../session.js";
 import { createTile } from "./components/tile.js";
 import { formatTime } from "../utils/date.js";
 import { consumeHighlight } from "./highlight.js";
 import * as confirmDialog from "./components/confirmDialog.js";
+import * as voice from "../voice.js";
+import { showToast } from "./components/toast.js";
 
 let unsubscribers = [];
 let currentCheckpointId = null;
 let showExited = false;
 let tileRevokers = [];
+let activeRecognition = null;
 
 export function mount(container, params) {
   const { activeSession } = getState();
@@ -29,6 +32,10 @@ export function unmount() {
   unsubscribers = [];
   tileRevokers.forEach((fn) => fn());
   tileRevokers = [];
+  if (activeRecognition) {
+    activeRecognition.abort();
+    activeRecognition = null;
+  }
 }
 
 function pickDefaultCheckpoint(session) {
@@ -206,7 +213,7 @@ function render(container) {
   footer.className = "sticky-footer";
   const recordBtn = document.createElement("button");
   const allConfirmed = confirmedCount === activeIds.length;
-  recordBtn.className = `btn btn--block ${allConfirmed ? "btn--primary" : "btn--warning"}`;
+  recordBtn.className = `btn btn--flex ${allConfirmed ? "btn--primary" : "btn--warning"}`;
   recordBtn.textContent = checkpoint.recordedAt
     ? `記録済み(${formatTime(checkpoint.recordedAt)})・再記録する`
     : `この点呼を記録する (${confirmedCount}/${activeIds.length})`;
@@ -221,5 +228,80 @@ function render(container) {
     }
   });
   footer.appendChild(recordBtn);
+
+  if (voice.isSupported()) {
+    footer.appendChild(createMicButton(checkpoint.checkpointId));
+  }
+
   container.appendChild(footer);
+}
+
+// Push-to-talk: hold to listen, release to match the spoken name against the
+// active roster for this checkpoint and confirm on an unambiguous hit.
+function createMicButton(checkpointId) {
+  const micBtn = document.createElement("button");
+  micBtn.type = "button";
+  micBtn.className = "mic-btn";
+  micBtn.setAttribute("aria-label", "音声で確認(押しながら名前を言う)");
+  micBtn.innerHTML = '<svg class="icon"><use href="#icon-mic"></use></svg>';
+
+  const startListening = (e) => {
+    e.preventDefault();
+    if (activeRecognition) return;
+
+    const recognition = voice.createRecognition();
+    activeRecognition = recognition;
+    micBtn.classList.add("mic-btn--listening");
+
+    recognition.onresult = (event) => {
+      const { activeSession: current } = getState();
+      if (!current) return;
+      const activeIdsNow = activeParticipantIds(current, checkpointId);
+      const candidates = current.participants.filter((p) => activeIdsNow.includes(p.childId));
+      // continuous mode: each pause in speech finalizes one more entry, so a
+      // single onresult call may carry several names said while still held.
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const result = event.results[i];
+        if (!result.isFinal) continue;
+        const { childId, transcript } = voice.matchFromResult(result, candidates);
+        if (childId) {
+          confirmChild(checkpointId, childId);
+          const name = candidates.find((p) => p.childId === childId)?.nameSnapshot;
+          showToast(`✓ ${name} を確認しました`);
+        } else if (transcript) {
+          showToast(`「${transcript}」を認識できませんでした。タップして確認してください`);
+        }
+      }
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "no-speech" || event.error === "aborted") return;
+      showToast("音声を認識できませんでした");
+    };
+    recognition.onend = () => {
+      micBtn.classList.remove("mic-btn--listening");
+      activeRecognition = null;
+    };
+
+    try {
+      recognition.start();
+    } catch {
+      micBtn.classList.remove("mic-btn--listening");
+      activeRecognition = null;
+    }
+  };
+
+  const stopListening = () => {
+    if (activeRecognition) activeRecognition.stop();
+  };
+
+  const cancelListening = () => {
+    if (activeRecognition) activeRecognition.abort();
+  };
+
+  micBtn.addEventListener("pointerdown", startListening);
+  micBtn.addEventListener("pointerup", stopListening);
+  micBtn.addEventListener("pointercancel", cancelListening);
+  micBtn.addEventListener("pointerleave", cancelListening);
+
+  return micBtn;
 }

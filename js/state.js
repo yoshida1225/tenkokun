@@ -140,6 +140,13 @@ export function toggleConfirm(checkpointId, childId) {
   notify("session:changed");
 }
 
+export function confirmChild(checkpointId, childId) {
+  if (!state.activeSession) return;
+  session.confirmChild(state.activeSession, checkpointId, childId);
+  persistActiveSession();
+  notify("session:changed");
+}
+
 export function recordCheckpoint(checkpointId, opts) {
   if (!state.activeSession) return { ok: false };
   const result = session.recordCheckpoint(state.activeSession, checkpointId, opts);
