@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   matchChildName,
   matchFromResult,
+  matchNameSequence,
   canAddAlias,
   resolveAliasConflicts,
   isLearnableTranscript,
@@ -96,21 +97,26 @@ function fakeResult(...transcripts) {
 }
 
 test("matchFromResult walks alternatives until one matches uniquely", () => {
-  const { childId, transcript } = matchFromResult(fakeResult("さとうじろう", "やまだはなこ"), roster());
-  assert.equal(childId, "c1");
+  const { childIds, transcript } = matchFromResult(fakeResult("さとうじろう", "やまだはなこ"), roster());
+  assert.deepEqual(childIds, ["c1"]);
   assert.equal(transcript, "やまだはなこ");
 });
 
 test("matchFromResult reports the top alternative when nothing matches", () => {
-  const { childId, transcript } = matchFromResult(fakeResult("こんにちは", "さようなら"), roster());
-  assert.equal(childId, null);
+  const { childIds, transcript } = matchFromResult(fakeResult("こんにちは", "さようなら"), roster());
+  assert.deepEqual(childIds, []);
   assert.equal(transcript, "こんにちは");
 });
 
 test("matchFromResult tolerates an empty result without throwing", () => {
-  const { childId, transcript } = matchFromResult(fakeResult(), roster());
-  assert.equal(childId, null);
+  const { childIds, transcript } = matchFromResult(fakeResult(), roster());
+  assert.deepEqual(childIds, []);
   assert.equal(transcript, "");
+});
+
+test("matchFromResult reads a run of names as a list", () => {
+  const { childIds } = matchFromResult(fakeResult("やまだはなこたなかたろうすずきけん"), roster());
+  assert.deepEqual(childIds, ["c1", "c2", "c3"]);
 });
 
 // --- Aliases ---
@@ -324,4 +330,67 @@ test("katakana honorifics are stripped like their hiragana spellings", () => {
   assert.equal(canon("ヤマダサン"), canon("やまだ"));
   const candidates = [{ childId: "c1", nameSnapshot: "はなこ" }];
   assert.equal(matchChildName("ハナコチャン", candidates), "c1");
+});
+
+// --- matchNameSequence: several names in one utterance ---
+
+// Aliases are how the kanji/katakana children get matched at all, so the list
+// reading has to work on them too — that is the realistic shape of the bug.
+function aliasRoster() {
+  return [
+    { childId: "c1", nameSnapshot: "やまだ はなこ", aliases: ["山田花子"] },
+    { childId: "c2", nameSnapshot: "たなか たろう", aliases: ["田中太郎"] },
+    { childId: "c3", nameSnapshot: "すずき けん", aliases: ["鈴木健"] },
+  ];
+}
+
+test("matchNameSequence reads names run together in spoken order", () => {
+  assert.deepEqual(matchNameSequence("たなかたろうやまだはなこ", roster()), ["c2", "c1"]);
+  assert.deepEqual(matchNameSequence("山田花子田中太郎鈴木健", aliasRoster()), ["c1", "c2", "c3"]);
+});
+
+test("matchNameSequence tolerates the separators between names", () => {
+  assert.deepEqual(matchNameSequence("山田花子、田中太郎", aliasRoster()), ["c1", "c2"]);
+  assert.deepEqual(matchNameSequence("山田花子 と 田中太郎", aliasRoster()), ["c1", "c2"]);
+  assert.deepEqual(matchNameSequence("山田花子ちゃん田中太郎くん", aliasRoster()), ["c1", "c2"]);
+});
+
+test("matchNameSequence refuses a single name, leaving it to the whole-transcript match", () => {
+  // One hit is the match that already failed wearing a disguise — and this is
+  // what keeps a short alias from firing inside ordinary speech.
+  assert.deepEqual(matchNameSequence("山田花子", aliasRoster()), []);
+  assert.deepEqual(matchNameSequence("舞い上がる", [{ childId: "c1", nameSnapshot: "まい", aliases: ["舞"] }]), []);
+});
+
+test("matchNameSequence refuses a sentence that merely contains names", () => {
+  // Two real names, but far too much left over to be a roll call.
+  assert.deepEqual(matchNameSequence("山田花子と田中太郎が公園で遊んでいます", aliasRoster()), []);
+});
+
+test("matchNameSequence lets the longest form claim the text", () => {
+  const candidates = [
+    { childId: "c1", nameSnapshot: "はなこ" },
+    { childId: "c2", nameSnapshot: "やまだはなこ" },
+    { childId: "c3", nameSnapshot: "たろう" },
+  ];
+  // 「やまだはなこ」 wins the span outright; 「はなこ」 never gets to claim it.
+  assert.deepEqual(matchNameSequence("やまだはなこたろう", candidates), ["c2", "c3"]);
+});
+
+test("matchNameSequence drops a span that would be ambiguous on its own", () => {
+  const candidates = [
+    { childId: "c1", nameSnapshot: "けん" },
+    { childId: "c2", nameSnapshot: "けん" },
+    { childId: "c3", nameSnapshot: "たろう" },
+  ];
+  // Two children answer to 「けん」, so it confirms neither — and that leaves a
+  // single name, which is not a list.
+  assert.deepEqual(matchNameSequence("けんたろう", candidates), []);
+});
+
+test("matchNameSequence tolerates junk input", () => {
+  assert.deepEqual(matchNameSequence("", roster()), []);
+  assert.deepEqual(matchNameSequence(null, roster()), []);
+  assert.deepEqual(matchNameSequence("こんにちは", roster()), []);
+  assert.deepEqual(matchNameSequence("やまだはなこ", []), []);
 });

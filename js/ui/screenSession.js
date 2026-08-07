@@ -496,18 +496,26 @@ function onVoiceResult(event) {
     // on, and two offers naming two transcripts is how you tap the wrong one.
     clearPendingLearn();
 
-    const { childId, transcript } = voice.matchFromResult(result, candidates);
+    const { childIds, transcript } = voice.matchFromResult(result, candidates);
     restartCount = 0;
     consecutiveNoSpeech = 0;
 
-    if (childId) {
-      confirmedByVoiceCount += 1;
-      // No success toast: 28 children would bury the screen. The tile turning
-      // green, the counter, the progress bar and the record button all already
-      // say it. setHighlight must come BEFORE confirmChild, which notifies ->
-      // render() -> consumeHighlight() synchronously.
-      setHighlight(childId, "voice");
-      confirmChild(currentCheckpointId, childId);
+    if (childIds.length) {
+      confirmedByVoiceCount += childIds.length;
+      // No success toast for a single name: 28 children would bury the screen,
+      // and the tile turning green, the counter, the progress bar and the
+      // record button all already say it. setHighlight must come BEFORE
+      // confirmChild, which notifies -> render() -> consumeHighlight()
+      // synchronously.
+      for (const id of childIds) {
+        setHighlight(id, "voice");
+        confirmChild(currentCheckpointId, id);
+      }
+      // Several names at once is the exception: only the last tile is left
+      // flashing, so the rest need saying out loud.
+      if (childIds.length > 1) {
+        showToast(`${childIds.length}人を確認しました`, { duration: TOAST_SHORT });
+      }
     } else if (transcript) {
       const trimmed = transcript.trim();
       const learnable = voice.isLearnableTranscript(trimmed);
