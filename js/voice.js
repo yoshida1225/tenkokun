@@ -71,7 +71,11 @@ function splitForms(candidates) {
 
 // Returns a childId only on an unambiguous hit — ties resolve to "no match" so
 // a mishearing never confirms the wrong child.
-export function matchChildName(transcript, candidates) {
+//
+// `substring: false` restricts it to tier 1, which is how matchFromResult asks
+// "is this whole transcript exactly one name?" without tier 2 answering "well,
+// one name is in there somewhere".
+export function matchChildName(transcript, candidates, { substring = true } = {}) {
   const target = canon(transcript);
   if (!target) return null;
 
@@ -83,6 +87,7 @@ export function matchChildName(transcript, candidates) {
   const exact = distinctIds([...names, ...aliases].filter((e) => e.norm === target));
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) return null;
+  if (!substring) return null;
 
   // Tier 2: substring, over NAMES ONLY. Aliases are exact-only on purpose:
   // kanji aliases run 1-3 characters (「花子」「舞」) and in the substring tier
@@ -167,32 +172,48 @@ export function matchNameSequence(transcript, candidates) {
   return ids;
 }
 
-// Reads the alternatives as a single name first, in confidence order, and only
-// then as a list. A whole transcript that IS one name is the strongest signal
-// there is, and it must not lose to some lower-confidence alternative that
-// thinks the same audio was three children.
+// Three passes over the alternatives, in decreasing order of how much the
+// evidence pins down.
 //
-// The list pass takes the alternative that finds the MOST children rather than
-// the first one that finds any: called fast, the top alternative often mangles
-// a name that a lower-ranked one heard correctly. Results are never combined
-// across alternatives — they are competing readings of the SAME audio, so
-// merging 「はなこ」 from one with 「はるこ」 from another would confirm two
-// children for one spoken name. One reading wins whole.
+// The ORDER is load-bearing. The obvious arrangement — take the first
+// alternative that matches anything — is what made calling four or more names
+// confirm only one of them. A four-name burst comes back as one long
+// transcript with most of the names mangled; if a single name survives
+// intact, matchChildName's substring tier finds it, reports that one child,
+// and the list reading never runs. So the substring tier is demoted BELOW the
+// list reading: it is the vaguest evidence here (a name is somewhere in
+// there) and has no business outranking three names found in order.
+//
+//   1. exact whole transcript — the utterance IS one name, nothing beats it
+//   2. list — the alternative finding the MOST children, because called fast
+//      the top alternative often mangles a name a lower-ranked one heard
+//   3. substring whole transcript — a name is in there somewhere
+//
+// Results are never combined across alternatives: they are competing readings
+// of the SAME audio, so merging 「はなこ」 from one with 「はるこ」 from another
+// would confirm two children for one spoken name. One reading wins whole.
 export function matchFromResult(result, candidates) {
   const transcripts = [];
   for (let i = 0; i < result.length; i += 1) transcripts.push(result[i].transcript);
+
+  for (const transcript of transcripts) {
+    const childId = matchChildName(transcript, candidates, { substring: false });
+    if (childId) return { childIds: [childId], transcript };
+  }
+
+  let best = null;
+  for (const transcript of transcripts) {
+    const sequence = matchNameSequence(transcript, candidates);
+    if (sequence.length > (best?.childIds.length ?? 0)) best = { childIds: sequence, transcript };
+  }
+  if (best) return best;
 
   for (const transcript of transcripts) {
     const childId = matchChildName(transcript, candidates);
     if (childId) return { childIds: [childId], transcript };
   }
 
-  let best = { childIds: [], transcript: transcripts[0] ?? "" };
-  for (const transcript of transcripts) {
-    const sequence = matchNameSequence(transcript, candidates);
-    if (sequence.length > best.childIds.length) best = { childIds: sequence, transcript };
-  }
-  return best;
+  return { childIds: [], transcript: transcripts[0] ?? "" };
 }
 
 // --- Alias safety ---

@@ -244,7 +244,9 @@ test("canAddAlias enforces length and count limits", () => {
   assert.equal(canAddAlias("山".repeat(21), "c1", roster()).reason, "tooLong");
 
   const full = roster();
-  full[0].aliases = ["山田花子", "花子", "山田", "華子", "はな子"];
+  // Filled from the constant so raising the cap does not silently turn this
+  // into a test of nothing.
+  full[0].aliases = ["山田花子", ...Array.from({ length: MAX_ALIASES_PER_CHILD - 1 }, (_, i) => `華子${i}`)];
   assert.equal(full[0].aliases.length, MAX_ALIASES_PER_CHILD);
   assert.equal(canAddAlias("蓮", "c1", full).reason, "tooMany");
   // duplicate is reported ahead of tooMany, so re-adding says "already there"
@@ -426,4 +428,23 @@ test("matchFromResult prefers a whole-transcript name over any list reading", ()
   // claiming the same audio was three children.
   const result = fakeResult("山田花子", "山田花子田中太郎鈴木健");
   assert.deepEqual(matchFromResult(result, aliasRoster()).childIds, ["c1"]);
+});
+
+// THE FOUR-NAME BUG. Calling four or more names confirmed exactly one of them.
+// The transcript comes back with most names mangled; the one that survives is
+// found by matchChildName's substring tier, which used to run BEFORE the list
+// reading and short-circuit it. Pinned so the pass order cannot be casually
+// reordered back.
+test("matchFromResult does not let one surviving name pre-empt the list", () => {
+  const four = [...aliasRoster(), { childId: "c4", nameSnapshot: "ようせい" }];
+  // 「ようせい」 survives whole (substring tier would happily return c4 alone),
+  // but two other children are in there too.
+  const { childIds } = matchFromResult(fakeResult("山田花子田中太郎ようせい"), four);
+  assert.deepEqual(childIds, ["c1", "c2", "c4"]);
+});
+
+test("matchFromResult still falls back to the substring tier alone", () => {
+  // Nothing to make a list out of, so the vaguest evidence is all there is.
+  const { childIds } = matchFromResult(fakeResult("やまだはなこです"), roster());
+  assert.deepEqual(childIds, ["c1"]);
 });

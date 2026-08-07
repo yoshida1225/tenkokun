@@ -2,13 +2,17 @@
 // rides in a cached JS file, that one lives in the service worker process — so
 // when they disagree the device is serving stale JS out of an old cache. The
 // settings screen shows both precisely so that state stops being invisible.
-export const APP_VERSION = "v17";
+export const APP_VERSION = "v18";
 
 export const GROUP_PRESETS = ["まつぼっくり", "くるみ", "くわのみ", "つぼみ", "たね"];
 
 // Voice alias limits. Here rather than in voice.js so roster.js can enforce
 // them without depending on a module that touches browser speech APIs.
 // Beyond a handful of aliases per child every extra entry is another surface
-// for a wrong-child match, so the cap is deliberately low.
-export const MAX_ALIASES_PER_CHILD = 5;
+// for a wrong-child match, so the cap stays low. Raised from 5 because a name
+// that is also an ordinary word — 「ようせい」 is 妖精/養成/要請/陽性 — comes back
+// spelled differently depending on what the recognizer thinks it heard, and
+// each spelling has to be taught separately. Those children hit the cap while
+// still mismatching. Every alias still has to clear canAddAlias.
+export const MAX_ALIASES_PER_CHILD = 8;
 export const MAX_ALIAS_LENGTH = 20;

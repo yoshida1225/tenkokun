@@ -62,7 +62,7 @@ test("normalizeBackupChild filters junk entries and caps the alias list", () => 
   const overflowing = normalizeBackupChild({
     childId: "c1",
     name: "はなこ",
-    voiceAliases: ["a", "b", "c", "d", "e", "f", "g"],
+    voiceAliases: Array.from({ length: MAX_ALIASES_PER_CHILD + 2 }, (_, i) => `別名${i}`),
   });
   assert.equal(overflowing.voiceAliases.length, MAX_ALIASES_PER_CHILD);
 });

@@ -44,7 +44,9 @@ test("addVoiceAlias ignores blank input and respects the cap", () => {
   child = addVoiceAlias(child, "   ");
   assert.deepEqual(child.voiceAliases, []);
 
-  for (const a of ["山田花子", "花子", "山田", "華子", "はな子", "溢れる分"]) {
+  // One more than the cap, derived from it so raising the cap keeps testing
+  // the overflow rather than falling short of it.
+  for (const a of Array.from({ length: MAX_ALIASES_PER_CHILD + 1 }, (_, i) => `山田花子${i}`)) {
     child = addVoiceAlias(child, a);
   }
   assert.equal(child.voiceAliases.length, MAX_ALIASES_PER_CHILD);
