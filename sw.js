@@ -1,7 +1,7 @@
 // Bump this on every deploy that touches cached files (ASSETS below, or any
 // JS/CSS it imports) — the browser only checks for a SW update when sw.js's
 // own bytes change, so an unbumped version means the PWA never updates.
-const CACHE_VERSION = "v13";
+const CACHE_VERSION = "v14";
 const CACHE_NAME = `tenkokun-static-${CACHE_VERSION}`;
 
 const ASSETS = [
@@ -75,4 +75,12 @@ self.addEventListener("fetch", (event) => {
 
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
+  // Lets the settings screen report the version actually running in this
+  // worker, rather than the version the page's JS believes it is. The two can
+  // differ because the fetch handler above is cache-first with no
+  // revalidation, and that divergence is what makes "did the update apply?"
+  // impossible to answer from the outside.
+  if (event.data?.type === "GET_VERSION") {
+    event.ports[0]?.postMessage({ cacheVersion: CACHE_VERSION });
+  }
 });

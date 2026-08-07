@@ -46,6 +46,7 @@ export function unmount() {
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("pagehide", onPageHide);
   stopVoice({ hard: true });
+  clearPendingLearn();
 }
 
 // Backgrounding the app or locking the screen must not leave the mic live.
@@ -270,6 +271,7 @@ function render(container) {
 
 function openOverlayWithMicOff(name, params) {
   stopVoice({ hard: true });
+  clearPendingLearn(); // a modal really is a change of context
   router.openOverlay(name, params);
 }
 
@@ -292,11 +294,19 @@ const MAX_RESTARTS_WITHOUT_RESULT = 8;
 const MAX_LISTEN_MS = 3 * 60 * 1000;
 const UNMATCHED_TOAST_COOLDOWN_MS = 4000;
 const TOAST_SHORT = 1600;
-// How long an unmatched transcript stays eligible to be taught, and how long
-// the offer stays on screen — one constant so they can never diverge. Short on
-// purpose: the repair loop (hear the miss, look at the grid, tap the tile) is
-// 2-5 seconds, and past that we would be guessing at intent.
-const LEARN_WINDOW_MS = 8000;
+// How long an unmatched transcript stays eligible to be taught. Originally 8s
+// on the theory that the repair loop is 2-5 seconds — but that assumed the
+// child's tile was already on screen. With 10-28 tiles the caregiver has to
+// find and often scroll to the right one while watching actual children, which
+// routinely takes longer, and the offer silently never appeared.
+// Widening is safe because time was never the real guard: a new utterance, a
+// checkpoint switch, an overlay or leaving the screen all still discard it,
+// only a confirm-direction tap qualifies, the prompt names the child, the
+// alias is checked against the whole roster, and it can be undone.
+const LEARN_WINDOW_MS = 45000;
+// Separate from the eligibility window — how long the prompt itself sits over
+// the sticky footer. These serve different purposes and must not be unified.
+const LEARN_OFFER_TOAST_MS = 8000;
 
 const VOICE_ERROR_MESSAGES = {
   "no-speech": "声が聞き取れませんでした",
@@ -317,7 +327,6 @@ let restartCount = 0;
 let confirmedByVoiceCount = 0;
 let lastUnmatchedToastAt = 0;
 let pendingLearn = null; // { transcript, sessionId, checkpointId, at }
-let pendingLearnTimer = null;
 let learnOfferDismiss = null;
 
 // Resolve the button from the DOM every time. render() rebuilds the footer
@@ -386,6 +395,12 @@ function startRecognitionCycle() {
     recognition.onstart = () => {
       started = true;
       clearTimeout(watchdogTimer);
+      // A successful start proves the engine works, so the restart budget is
+      // spent only on starts that FAIL. Previously every restart counted,
+      // including the ones caused by ordinary silence — and a caregiver
+      // walking with children is silent most of the time, so the mic gave up
+      // and switched itself off during normal use.
+      restartCount = 0;
       paintMic();
     };
     recognition.onresult = onVoiceResult;
@@ -506,7 +521,6 @@ function onVoiceResult(event) {
           checkpointId: currentCheckpointId,
           at: Date.now(),
         };
-        pendingLearnTimer = setTimeout(clearPendingLearn, LEARN_WINDOW_MS);
       }
       // Two characters filters out grunts and stray syllables — but a single
       // kanji is a real given name (舞/蓮/葵/健), so anything learnable is
@@ -527,10 +541,11 @@ function onVoiceResult(event) {
 // Rather than ship a dictionary, learn from the caregiver at the one moment
 // their intent is unambiguous: the tap they were about to make anyway.
 
+// No expiry timer: the age is checked at tap time instead, so an expired offer
+// can SAY it expired. A timer that silently nulled it left the caregiver
+// tapping a tile and getting nothing back.
 function clearPendingLearn() {
   pendingLearn = null;
-  clearTimeout(pendingLearnTimer);
-  pendingLearnTimer = null;
   learnOfferDismiss?.();
   learnOfferDismiss = null;
 }
@@ -543,7 +558,11 @@ function offerAliasLearn(childId, checkpointId) {
   if (!current || current.sessionId !== p.sessionId || checkpointId !== p.checkpointId) {
     return clearPendingLearn();
   }
-  if (Date.now() - p.at > LEARN_WINDOW_MS) return clearPendingLearn();
+  if (Date.now() - p.at > LEARN_WINDOW_MS) {
+    clearPendingLearn();
+    showToast(`「${p.transcript}」の登録は時間切れです。もう一度言ってからタップしてください`);
+    return;
+  }
 
   const transcript = p.transcript;
   clearPendingLearn(); // consume before anything can re-enter
@@ -559,11 +578,21 @@ function offerAliasLearn(childId, checkpointId) {
   const name = getChildById(liveRoster, childId)?.name ?? "この子";
 
   if (!verdict.ok) {
-    // Only a conflict is worth interrupting for — it is real safety feedback.
-    // duplicate/tooShort/tooLong/tooMany stay silent.
+    // Every branch says something. A tap that produces nothing is the exact
+    // failure mode that made this feature look broken in the first place.
     if (verdict.reason === "conflict") {
       const other = getChildById(liveRoster, verdict.conflictChildId)?.name ?? "他の子";
       showToast(`「${transcript}」は ${other} さんと紛らわしいため覚えられません`);
+    } else if (verdict.reason === "duplicate") {
+      showToast(`「${transcript}」はすでに ${name} さんに登録されています`, { duration: TOAST_SHORT });
+    } else if (verdict.reason === "tooMany") {
+      showToast(`${name} さんの呼び方が上限です。名簿から古いものを削除してください`);
+    } else if (verdict.reason === "tooShort") {
+      showToast(`「${transcript}」は短すぎて覚えられません`, { duration: TOAST_SHORT });
+    } else if (verdict.reason === "tooLong") {
+      showToast(`「${transcript}」は長すぎて覚えられません`, { duration: TOAST_SHORT });
+    } else {
+      showToast(`「${transcript}」は覚えられませんでした (${verdict.reason})`);
     }
     return;
   }
@@ -571,7 +600,7 @@ function offerAliasLearn(childId, checkpointId) {
   // Safe despite toggleConfirm having just re-rendered the screen
   // synchronously: #toast-root lives outside the screen container.
   learnOfferDismiss = showToast(`「${transcript}」を ${name} さんの呼び方として覚えますか?`, {
-    duration: LEARN_WINDOW_MS,
+    duration: LEARN_OFFER_TOAST_MS,
     actionLabel: "覚える",
     onAction: () => commitAlias(childId, transcript, name),
   });
@@ -596,10 +625,12 @@ function commitAlias(childId, transcript, name) {
   });
 }
 
+// NOTE: deliberately does NOT clear pendingLearn. The caregiver saying a name
+// and then hunting for the tile is the normal flow, and the mic stopping
+// midway — auto-off, a restart giving up, or them switching it off — does not
+// change who they meant. Only a real change of context discards it: a new
+// utterance, a checkpoint switch, an overlay, or leaving the screen.
 function stopVoice({ hard = false, summary = false } = {}) {
-  // Single funnel: this covers mic-off, overlay open, backgrounding, pagehide,
-  // the 3-minute auto-off, failVoice and unmount in one line.
-  clearPendingLearn();
   const wasListening = voiceListening;
   voiceListening = false;
   clearTimeout(restartTimer);

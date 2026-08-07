@@ -5,12 +5,37 @@ import { showToast } from "./components/toast.js";
 import { exportRosterBackup, importRosterBackup, exportAllHistoryCsv } from "../backup.js";
 import { estimateStorageUsage } from "../storage.js";
 import { formatDateTime } from "../utils/date.js";
+import { APP_VERSION } from "../constants.js";
 
 export function mount(container) {
   render(container);
 }
 
 export function unmount() {}
+
+// Asks the worker that actually served this page, via navigator.serviceWorker
+// .controller — NOT .ready, whose .active can be a newer worker that has not
+// served anything yet. Resolves null if there is no controller or the worker
+// predates the GET_VERSION handler (which every already-installed copy does),
+// so the caller must render that case rather than hang on 確認中….
+function getServiceWorkerVersion({ timeoutMs = 1500 } = {}) {
+  const worker = navigator.serviceWorker?.controller;
+  if (!worker) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timer);
+      resolve(event.data?.cacheVersion ?? null);
+    };
+    try {
+      worker.postMessage({ type: "GET_VERSION" }, [channel.port2]);
+    } catch {
+      clearTimeout(timer);
+      resolve(null);
+    }
+  });
+}
 
 function formatBytes(n) {
   if (!n) return "0 KB";
@@ -128,6 +153,35 @@ async function render(container) {
     render(container);
   });
   storageSection.appendChild(gcBtn);
+
+  // Version. Two lines on purpose: the first is what the loaded JS claims, the
+  // second is what the service worker actually serving that JS claims. They
+  // only agree when a deploy landed cleanly, and hours have been lost to that
+  // being unknowable from the outside.
+  const versionSection = document.createElement("div");
+  versionSection.className = "settings-section";
+  versionSection.innerHTML = `<div class="settings-section__title">バージョン</div>`;
+  const appLine = document.createElement("div");
+  appLine.className = "settings-row__desc";
+  appLine.textContent = `アプリ: ${APP_VERSION}`;
+  const swLine = document.createElement("div");
+  swLine.className = "settings-row__desc";
+  swLine.textContent = "Service Worker: 確認中…";
+  versionSection.appendChild(appLine);
+  versionSection.appendChild(swLine);
+  scroll.appendChild(versionSection);
+
+  getServiceWorkerVersion().then((swVersion) => {
+    if (!swLine.isConnected) return;
+    swLine.textContent = `Service Worker: ${swVersion ?? "応答なし(古いバージョン)"}`;
+    if (swVersion && swVersion !== APP_VERSION) {
+      const warn = document.createElement("div");
+      warn.className = "settings-row__desc";
+      warn.style.color = "var(--color-warning)";
+      warn.textContent = "⚠ 更新が中途半端です。アプリを完全終了して開き直してください";
+      versionSection.appendChild(warn);
+    }
+  });
 
   // Danger zone
   const dangerSection = document.createElement("div");
