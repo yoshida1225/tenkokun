@@ -8,7 +8,7 @@
 1. [GitHub](https://github.com/)で無料アカウントを作成する(すでに持っていれば不要)。
 2. 新しいPublicリポジトリを作成する(例: `tenkokun`)。アプリコードのみで園児の個人情報は含まれないため公開して問題ありません。
 3. この`tenkokun`フォルダの中身をすべてリポジトリにアップロードする。
-4. リポジトリの Settings → Pages → Source を「Deploy from a branch」、ブランチを`main` / `/(root)`にして保存する。
+4. リポジトリの Settings → Pages → Source を「Deploy from a branch」、ブランチを`master` / `/(root)`にして保存する。
 5. 数分待つと `https://(ユーザー名).github.io/tenkokun/` でアプリが公開される。
 
 ## iPhoneへのインストール
