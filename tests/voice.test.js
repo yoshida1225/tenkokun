@@ -479,3 +479,31 @@ test("isPlausibleVoiceAlias rejects kana that is just talk", () => {
   assert.equal(isPlausibleVoiceAlias("", "ののか"), false);
   assert.equal(isPlausibleVoiceAlias("のんか", ""), false);
 });
+
+// --- growing: reading an interim result the recognizer is still typing ---
+
+test("growing mode refuses a name that is still on its way to a longer one", () => {
+  const c = [
+    { childId: "c1", nameSnapshot: "あや" },
+    { childId: "c2", nameSnapshot: "あやか" },
+  ];
+  // 「あや」 is a whole name AND the first two characters of another. Mid-word
+  // there is no way to tell which, so wait for the final.
+  assert.deepEqual(matchFromResult(fakeResult("あや"), c, { growing: true }).childIds, []);
+  // Settled, it is exactly one child.
+  assert.deepEqual(matchFromResult(fakeResult("あや"), c).childIds, ["c1"]);
+  // And the longer name is nobody's prefix, so it ticks straight away.
+  assert.deepEqual(matchFromResult(fakeResult("あやか"), c, { growing: true }).childIds, ["c2"]);
+});
+
+test("growing mode drops the substring reading", () => {
+  // 「やまだはなこ」 is in there, but so is the start of whatever comes next.
+  assert.deepEqual(matchFromResult(fakeResult("やまだはなこです"), roster(), { growing: true }).childIds, []);
+  assert.deepEqual(matchFromResult(fakeResult("やまだはなこです"), roster()).childIds, ["c1"]);
+});
+
+test("growing mode still ticks whole names and lists", () => {
+  assert.deepEqual(matchFromResult(fakeResult("やまだはなこ"), roster(), { growing: true }).childIds, ["c1"]);
+  const run = fakeResult("やまだはなこたなかたろう");
+  assert.deepEqual(matchFromResult(run, roster(), { growing: true }).childIds, ["c1", "c2"]);
+});

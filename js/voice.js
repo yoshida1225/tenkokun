@@ -36,11 +36,18 @@ export function diagnostics() {
 // after the first. Safari does NOT honour it — it ends after a single
 // utterance regardless — so the caller must restart on `end` to keep listening.
 // See startRecognitionCycle/scheduleRestart in ui/screenSession.js.
+// interimResults is ON because without it iOS delivers NOTHING until
+// recognition stops — every tile in a walk went green at once the moment the
+// caregiver switched the mic off, long after they had looked at the children.
+// The point of this feature is watching the tile turn green while you are
+// still looking at the child, and that needs the running guess, not the
+// verdict. See onVoiceResult for what interim results are and are not allowed
+// to do.
 export function createRecognition() {
   const recognition = new RecognitionCtor();
   recognition.lang = "ja-JP";
   recognition.continuous = true;
-  recognition.interimResults = false;
+  recognition.interimResults = true;
   recognition.maxAlternatives = 5;
   return recognition;
 }
@@ -192,13 +199,31 @@ export function matchNameSequence(transcript, candidates) {
 // Results are never combined across alternatives: they are competing readings
 // of the SAME audio, so merging 「はなこ」 from one with 「はるこ」 from another
 // would confirm two children for one spoken name. One reading wins whole.
-export function matchFromResult(result, candidates) {
+//
+// `growing: true` reads a transcript the recognizer has not finished typing —
+// an interim result. Two things change, both about the same hazard: a partial
+// transcript looks exactly like a shorter name.
+//
+//   - pass 3 is dropped. It answers "a name is in there somewhere", and
+//     「あや」 is in 「あやか」 for as long as it takes to type one more
+//     character.
+//   - pass 1 refuses a name that is a strict prefix of some OTHER child's
+//     form, because the utterance may be on its way there. It costs nothing:
+//     the final result confirms them a moment later.
+//
+// Pass 2 needs two names and near-total coverage, so it is only reachable by a
+// partial in the narrow case where one child's whole name prefixes another's
+// AND the interim stops exactly on that boundary. Left unguarded rather than
+// carrying the machinery for it; the roster holds full names.
+export function matchFromResult(result, candidates, { growing = false } = {}) {
   const transcripts = [];
   for (let i = 0; i < result.length; i += 1) transcripts.push(result[i].transcript);
 
   for (const transcript of transcripts) {
     const childId = matchChildName(transcript, candidates, { substring: false });
-    if (childId) return { childIds: [childId], transcript };
+    if (childId && !(growing && prefixesAnotherChild(canon(transcript), candidates, childId))) {
+      return { childIds: [childId], transcript };
+    }
   }
 
   let best = null;
@@ -208,12 +233,21 @@ export function matchFromResult(result, candidates) {
   }
   if (best) return best;
 
-  for (const transcript of transcripts) {
-    const childId = matchChildName(transcript, candidates);
-    if (childId) return { childIds: [childId], transcript };
+  if (!growing) {
+    for (const transcript of transcripts) {
+      const childId = matchChildName(transcript, candidates);
+      if (childId) return { childIds: [childId], transcript };
+    }
   }
 
   return { childIds: [], transcript: transcripts[0] ?? "" };
+}
+
+function prefixesAnotherChild(target, candidates, childId) {
+  const { names, aliases } = splitForms(candidates);
+  return [...names, ...aliases].some(
+    (f) => f.childId !== childId && f.norm.length > target.length && f.norm.startsWith(target)
+  );
 }
 
 // --- Alias safety ---

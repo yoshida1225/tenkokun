@@ -489,6 +489,27 @@ function voiceCandidates(session, checkpointId) {
   );
 }
 
+// Children already ticked on this checkpoint, so a name heard over and over in
+// a growing interim transcript is acted on exactly once. Also covers the child
+// the caregiver already tapped by hand.
+function alreadyConfirmed(session, checkpointId, childId) {
+  const checkpoint = session.checkpoints.find((cp) => cp.checkpointId === checkpointId);
+  return !!checkpoint?.confirmedChildIds.includes(childId);
+}
+
+// Returns the ids it actually ticked.
+function confirmFromVoice(session, childIds) {
+  const fresh = childIds.filter((id) => !alreadyConfirmed(session, currentCheckpointId, id));
+  confirmedByVoiceCount += fresh.length;
+  // setHighlight must come BEFORE confirmChild, which notifies -> render() ->
+  // consumeHighlight() synchronously.
+  for (const id of fresh) {
+    setHighlight(id, "voice");
+    confirmChild(currentCheckpointId, id);
+  }
+  return fresh;
+}
+
 function onVoiceResult(event) {
   const { activeSession: current } = getState();
   if (!current || !currentCheckpointId) return;
@@ -498,7 +519,28 @@ function onVoiceResult(event) {
 
   for (let i = event.resultIndex; i < event.results.length; i += 1) {
     const result = event.results[i];
-    if (!result.isFinal) continue;
+
+    // An interim result is the recognizer thinking out loud: it arrives while
+    // the caregiver is still looking at the child, which is the whole reason
+    // it is read at all. It gets to do ONE thing — tick a tile — and is
+    // trusted much less than a final:
+    //   - read in `growing` mode, which refuses the readings that a
+    //     half-typed transcript can fake (see matchFromResult)
+    //   - nothing is remembered for teaching; interim text is revised, and an
+    //     alias is forever
+    //   - no toasts at all, neither success nor 「分かりませんでした」; these
+    //     fire many times per utterance
+    // Everything it does is additive and already reversible by tapping the
+    // tile again, and the caregiver is watching it happen — which is more
+    // than could be said for the old behaviour of ticking every tile at once
+    // after the mic went off.
+    if (!result.isFinal) {
+      restartCount = 0;
+      consecutiveNoSpeech = 0;
+      const { childIds } = voice.matchFromResult(result, candidates, { growing: true });
+      confirmFromVoice(current, childIds);
+      continue;
+    }
 
     // Any new utterance invalidates a pending offer — the caregiver has moved
     // on, and two offers naming two transcripts is how you tap the wrong one.
@@ -509,22 +551,16 @@ function onVoiceResult(event) {
     consecutiveNoSpeech = 0;
 
     if (childIds.length) {
-      confirmedByVoiceCount += childIds.length;
+      // Usually empty by now: the interim pass ticked these tiles seconds ago.
+      const fresh = confirmFromVoice(current, childIds);
       // No success toast for a single name: 28 children would bury the screen,
       // and the tile turning green, the counter, the progress bar and the
-      // record button all already say it. setHighlight must come BEFORE
-      // confirmChild, which notifies -> render() -> consumeHighlight()
-      // synchronously.
-      for (const id of childIds) {
-        setHighlight(id, "voice");
-        confirmChild(currentCheckpointId, id);
-      }
-      // Several names at once is the exception: only the last tile is left
-      // flashing, so the rest need naming. Names, not just a count — a count
-      // cannot be checked against the children in front of you, and catching a
-      // wrong confirmation is the whole point of showing anything.
-      if (childIds.length > 1) {
-        const names = childIds.map((id) => candidates.find((c) => c.childId === id)?.nameSnapshot ?? "?");
+      // record button all already say it. Several at once is the exception —
+      // only the last tile is left flashing, so the rest need naming. Names,
+      // not just a count: a count cannot be checked against the children in
+      // front of you, and catching a wrong confirmation is the whole point.
+      if (fresh.length > 1) {
+        const names = fresh.map((id) => candidates.find((c) => c.childId === id)?.nameSnapshot ?? "?");
         const shown = names.slice(0, MULTI_CONFIRM_NAMES_SHOWN).join("・");
         const rest = names.length - MULTI_CONFIRM_NAMES_SHOWN;
         showToast(`${shown}${rest > 0 ? ` ほか${rest}人` : ""} を確認しました`, {
