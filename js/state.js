@@ -191,7 +191,7 @@ export function endSession() {
   if (!appendResult.ok) {
     activeSession.status = "in_progress";
     activeSession.endedAt = null;
-    return { ok: false };
+    return { ok: false, error: appendResult.error };
   }
 
   storage.setActiveSessionRaw(null);

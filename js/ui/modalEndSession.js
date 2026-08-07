@@ -27,7 +27,8 @@ export function mount(container) {
       router.closeOverlay();
       router.navigateTo("home", {}, { replace: true });
     } else {
-      showToast("終了処理に失敗しました。もう一度お試しください");
+      const detail = result.error?.name || result.error?.message;
+      showToast(detail ? `終了処理に失敗しました (${detail})` : "終了処理に失敗しました。もう一度お試しください");
     }
   });
 
