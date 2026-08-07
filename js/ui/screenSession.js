@@ -307,6 +307,14 @@ const LEARN_WINDOW_MS = 45000;
 // Separate from the eligibility window — how long the prompt itself sits over
 // the sticky footer. These serve different purposes and must not be unified.
 const LEARN_OFFER_TOAST_MS = 8000;
+// A multi-confirm toast is the ONLY record of who a single utterance marked
+// present — the tiles flash too fast to follow and only the last one is left
+// highlighted. It has to survive long enough to be read and checked against
+// the children actually standing there, which 1600ms does not.
+const MULTI_CONFIRM_TOAST_MS = 6000;
+// Beyond this the toast is a wall of text nobody reads; the count carries the
+// rest. Real roll-call bursts are 2-5 names.
+const MULTI_CONFIRM_NAMES_SHOWN = 4;
 
 const VOICE_ERROR_MESSAGES = {
   "no-speech": "声が聞き取れませんでした",
@@ -512,9 +520,16 @@ function onVoiceResult(event) {
         confirmChild(currentCheckpointId, id);
       }
       // Several names at once is the exception: only the last tile is left
-      // flashing, so the rest need saying out loud.
+      // flashing, so the rest need naming. Names, not just a count — a count
+      // cannot be checked against the children in front of you, and catching a
+      // wrong confirmation is the whole point of showing anything.
       if (childIds.length > 1) {
-        showToast(`${childIds.length}人を確認しました`, { duration: TOAST_SHORT });
+        const names = childIds.map((id) => candidates.find((c) => c.childId === id)?.nameSnapshot ?? "?");
+        const shown = names.slice(0, MULTI_CONFIRM_NAMES_SHOWN).join("・");
+        const rest = names.length - MULTI_CONFIRM_NAMES_SHOWN;
+        showToast(`${shown}${rest > 0 ? ` ほか${rest}人` : ""} を確認しました`, {
+          duration: MULTI_CONFIRM_TOAST_MS,
+        });
       }
     } else if (transcript) {
       const trimmed = transcript.trim();

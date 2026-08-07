@@ -110,9 +110,23 @@ export function matchChildName(transcript, candidates) {
 //     that just failed, wearing a disguise
 //   - spans never overlap; the longest form claims the text first, so
 //     「やまだはなこ」 beats a 「はなこ」 belonging to someone else
-//   - what remains after removing the names is at most one character per name,
-//     which is what separates 「はなこ<と>たろう」 from a sentence that happens
-//     to contain a name (「舞い上がる」 keeps 4 characters for 1 name)
+//   - a SHORT span (1-3 characters — the length a kanji alias runs, and the
+//     only length that plausibly hides inside an unrelated word) must sit
+//     right up against another name to count. 「舞」 and 「健」 are two children
+//     in 「健太郎が舞い上がる」 and nowhere near each other; in
+//     「山田花子鈴木健」 the 「鈴木健」 is flush against its neighbour.
+//   - what remains after removing the names is at most two characters per
+//     name, which is what separates 「はなこ<と>たろう」 from prose
+//
+// The leftover budget is per NAME rather than a flat cap on purpose. Called
+// fast, a burst of four names usually comes back with three intact and one
+// mangled into junk — and a flat cap meant that junk pushed the whole
+// utterance over and confirmed NOBODY. Scaling the allowance keeps the three
+// good names and just loses the fourth, which the caregiver can tap.
+const SHORT_SPAN = 4;
+const TIGHT_GAP = 2;
+const SLACK_PER_NAME = 2;
+
 export function matchNameSequence(transcript, candidates) {
   const target = canon(transcript);
   if (!target) return [];
@@ -138,26 +152,47 @@ export function matchNameSequence(transcript, candidates) {
     claimed.push(span);
   }
 
-  const covered = claimed.reduce((sum, c) => sum + width(c), 0);
   claimed.sort((a, b) => a.start - b.start);
-  const ids = distinctIds(claimed);
+  const kept = claimed.filter((span, i) => {
+    if (width(span) >= SHORT_SPAN) return true;
+    const prev = claimed[i - 1];
+    const next = claimed[i + 1];
+    return (prev && span.start - prev.end <= TIGHT_GAP) || (next && next.start - span.end <= TIGHT_GAP);
+  });
+
+  const ids = distinctIds(kept);
   if (ids.length < 2) return [];
-  if (target.length - covered > ids.length) return [];
+  const covered = kept.reduce((sum, c) => sum + width(c), 0);
+  if (target.length - covered > ids.length * SLACK_PER_NAME) return [];
   return ids;
 }
 
-// Tries each speech-recognition alternative in confidence order until one
-// yields a match, reading each alternative as a single name first and only
-// then as a list. Returns childIds in the order they were spoken.
+// Reads the alternatives as a single name first, in confidence order, and only
+// then as a list. A whole transcript that IS one name is the strongest signal
+// there is, and it must not lose to some lower-confidence alternative that
+// thinks the same audio was three children.
+//
+// The list pass takes the alternative that finds the MOST children rather than
+// the first one that finds any: called fast, the top alternative often mangles
+// a name that a lower-ranked one heard correctly. Results are never combined
+// across alternatives — they are competing readings of the SAME audio, so
+// merging 「はなこ」 from one with 「はるこ」 from another would confirm two
+// children for one spoken name. One reading wins whole.
 export function matchFromResult(result, candidates) {
-  for (let i = 0; i < result.length; i += 1) {
-    const transcript = result[i].transcript;
+  const transcripts = [];
+  for (let i = 0; i < result.length; i += 1) transcripts.push(result[i].transcript);
+
+  for (const transcript of transcripts) {
     const childId = matchChildName(transcript, candidates);
     if (childId) return { childIds: [childId], transcript };
-    const sequence = matchNameSequence(transcript, candidates);
-    if (sequence.length) return { childIds: sequence, transcript };
   }
-  return { childIds: [], transcript: result[0]?.transcript ?? "" };
+
+  let best = { childIds: [], transcript: transcripts[0] ?? "" };
+  for (const transcript of transcripts) {
+    const sequence = matchNameSequence(transcript, candidates);
+    if (sequence.length > best.childIds.length) best = { childIds: sequence, transcript };
+  }
+  return best;
 }
 
 // --- Alias safety ---

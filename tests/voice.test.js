@@ -394,3 +394,36 @@ test("matchNameSequence tolerates junk input", () => {
   assert.deepEqual(matchNameSequence("こんにちは", roster()), []);
   assert.deepEqual(matchNameSequence("やまだはなこ", []), []);
 });
+
+test("matchNameSequence keeps the names it heard when one is mangled", () => {
+  // Four called fast, the last one coming back as junk. Before the leftover
+  // allowance scaled per name, that junk sank the whole utterance and
+  // confirmed nobody — the reported "早口だと取りこぼす".
+  const four = [...aliasRoster(), { childId: "c4", nameSnapshot: "さとう じろう", aliases: ["佐藤次郎"] }];
+  assert.deepEqual(matchNameSequence("山田花子田中太郎鈴木健さとじろ", four), ["c1", "c2", "c3"]);
+});
+
+test("matchNameSequence requires a short alias to sit against another name", () => {
+  const candidates = [
+    { childId: "c1", nameSnapshot: "まい", aliases: ["舞"] },
+    { childId: "c2", nameSnapshot: "けん", aliases: ["健"] },
+  ];
+  // Two children's aliases really are in there, but scattered through a
+  // sentence — 「健」 in 「健太郎」 and 「舞」 in 「舞い上がる」.
+  assert.deepEqual(matchNameSequence("健太郎が舞い上がる", candidates), []);
+  // Flush together, the same two aliases are a roll call.
+  assert.deepEqual(matchNameSequence("健と舞", candidates), ["c2", "c1"]);
+});
+
+test("matchFromResult takes the alternative that hears the most children", () => {
+  // The top alternative is not always the fullest reading of a fast burst.
+  const result = fakeResult("山田花子田中太郎", "山田花子田中太郎鈴木健");
+  assert.deepEqual(matchFromResult(result, aliasRoster()).childIds, ["c1", "c2", "c3"]);
+});
+
+test("matchFromResult prefers a whole-transcript name over any list reading", () => {
+  // One transcript that IS one name outranks a lower-confidence alternative
+  // claiming the same audio was three children.
+  const result = fakeResult("山田花子", "山田花子田中太郎鈴木健");
+  assert.deepEqual(matchFromResult(result, aliasRoster()).childIds, ["c1"]);
+});
