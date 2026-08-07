@@ -518,11 +518,16 @@ body.no-scroll {
 }
 
 /* --- Toast --- */
+/* Anchored to the TOP, clear of the header. At the bottom edge a toast landed
+   straight on the sticky footer, and during roll call that meant it covered the
+   mic button — call a group of names, and the confirmation toast blocked
+   starting the next group until it faded. The offset mirrors the header's own
+   padding so the gap below it stays the same with or without a safe area. */
 .toast-root {
   position: fixed;
   left: 0;
   right: 0;
-  bottom: max(var(--space-5), env(safe-area-inset-bottom));
+  top: calc(max(var(--space-3), env(safe-area-inset-top)) + var(--space-8) + var(--space-6));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -531,8 +536,12 @@ body.no-scroll {
   z-index: 50;
 }
 
+/* The body of a toast swallows nothing. Moving toasts off the mic button only
+   moved the problem onto the tiles underneath, so instead only the action
+   button inside a toast is clickable — everything the toast covers stays
+   tappable through it. */
 .toast {
-  pointer-events: auto;
+  pointer-events: none;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -543,6 +552,10 @@ body.no-scroll {
   font: var(--font-body);
   box-shadow: var(--elevation-1);
   max-width: 90vw;
+}
+
+.toast .link-btn {
+  pointer-events: auto;
 }
 
 /* --- Empty state --- */

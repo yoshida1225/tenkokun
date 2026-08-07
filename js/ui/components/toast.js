@@ -31,10 +31,10 @@ export function showToast(message, { duration = 3000, actionLabel, onAction } = 
   };
 }
 
-// NOTE: never use this over the roll-call screen. .toast-root sits at the
-// bottom edge with pointer-events:auto, directly on top of .sticky-footer —
-// a toast that never dismisses would swallow taps on the record and mic
-// buttons for the rest of the walk. Use showToast with a duration instead.
+// NOTE: still avoid this over the roll-call screen. Toasts no longer swallow
+// taps (only the action button inside one is clickable) so it can no longer
+// lock the caregiver out, but a banner that never leaves sits over the tiles
+// for the rest of the walk. Use showToast with a duration instead.
 export function showPersistent(message, { actionLabel, onAction } = {}) {
   const el = buildToastEl(message, { actionLabel, onAction });
   root()?.appendChild(el);
