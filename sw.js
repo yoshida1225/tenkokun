@@ -1,4 +1,7 @@
-const CACHE_VERSION = "v7";
+// Bump this on every deploy that touches cached files (ASSETS below, or any
+// JS/CSS it imports) — the browser only checks for a SW update when sw.js's
+// own bytes change, so an unbumped version means the PWA never updates.
+const CACHE_VERSION = "v8";
 const CACHE_NAME = `tenkokun-static-${CACHE_VERSION}`;
 
 const ASSETS = [
@@ -41,6 +44,7 @@ const ASSETS = [
   "./js/ui/components/confirmDialog.js",
   "./js/ui/components/photoCropModal.js",
   "./js/ui/components/activeSessionBanner.js",
+  "./js/voice.js",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
   "./icons/icon-maskable-512.png",
